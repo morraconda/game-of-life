@@ -8,6 +8,7 @@ import (
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
+
 // TestGol tests 16x16, 64x64 and 512x512 images on 0, 1 and 100 turns using 1-16 worker threads.
 func TestGol(t *testing.T) {
 	tests := []gol.Params{
