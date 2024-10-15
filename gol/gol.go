@@ -2,7 +2,6 @@ package gol
 
 import "fmt"
 
-
 // Params provides the details of how to run the Game of Life and which image to load.
 type Params struct {
 	Turns       int
@@ -18,13 +17,14 @@ func Run(p Params, events chan<- Event, keyPresses <-chan rune) {
 
 	ioCommand := make(chan ioCommand)
 	ioIdle := make(chan bool)
-	ioOutput := make(chan uint8)
-	ioInput := make(chan uint8)
+	ioFilename := make(chan string)
+	ioOutput := make(chan byte)
+	ioInput := make(chan byte)
 
 	ioChannels := ioChannels{
 		command:  ioCommand,
 		idle:     ioIdle,
-		filename: nil,
+		filename: ioFilename,
 		output:   ioOutput,
 		input:    ioInput,
 	}
@@ -34,7 +34,7 @@ func Run(p Params, events chan<- Event, keyPresses <-chan rune) {
 		events:     events,
 		ioCommand:  ioCommand,
 		ioIdle:     ioIdle,
-		ioFilename: nil,
+		ioFilename: ioFilename,
 		ioOutput:   ioOutput,
 		ioInput:    ioInput,
 	}

@@ -5,13 +5,13 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
 type ioChannels struct {
-	command <-chan ioCommand
-	idle    chan<- bool
-
+	command  <-chan ioCommand
+	idle     chan<- bool
 	filename <-chan string
 	output   <-chan uint8
 	input    chan<- uint8
@@ -28,9 +28,10 @@ type ioCommand uint8
 
 // This is a way of creating enums in Go.
 // It will evaluate to:
-//		ioOutput 	= 0
-//		ioInput 	= 1
-//		ioCheckIdle = 2
+//
+//	ioOutput 	= 0
+//	ioInput 	= 1
+//	ioCheckIdle = 2
 const (
 	ioOutput ioCommand = iota
 	ioInput
