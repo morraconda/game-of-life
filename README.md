@@ -1,4 +1,3 @@
-# game-of-life
+# CSA Coursework: Game of Life skeleton (Go)
 
-csa coursework
-Dom's test push 
+All documentation is available [here](https://uob-csa.github.io/gol-docs/)
