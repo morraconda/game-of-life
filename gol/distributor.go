@@ -2,6 +2,7 @@ package gol
 
 import (
 	"fmt"
+	"strconv"
 
 	"uk.ac.bris.cs/gameoflife/util"
 )
@@ -15,25 +16,57 @@ type distributorChannels struct {
 	ioInput    <-chan uint8
 }
 
+// prints cell contents
+func printCell(cell util.Cell) {
+	fmt.Printf("(%d, %d) ", cell.X, cell.Y)
+}
+
+func printCells(cells []util.Cell) {
+	for _, cell := range cells {
+		printCell(cell)
+	}
+}
+
+// get filename from params
+func getFilename(p Params) string {
+	return strconv.Itoa(p.ImageWidth) + "x" + strconv.Itoa(p.ImageHeight)
+}
+
+// returns in-bounds version of a cell if out of bounds
+func wrap(cell util.Cell, p Params) util.Cell {
+	if cell.X == -1 {
+		cell.X = p.ImageWidth - 1
+	} else if cell.X == p.ImageHeight {
+		cell.X = 0
+	}
+
+	if cell.Y == -1 {
+		cell.Y = p.ImageHeight - 1
+	} else if cell.Y == p.ImageHeight {
+		cell.Y = 0
+	}
+	return cell
+}
+
 // returns list of cells adjacent to the one given, accounting for wraparounds
 func getAdjacentCells(cell util.Cell, p Params) []util.Cell {
-	result := make([]util.Cell, 8)
+	var adjacent []util.Cell
 	for i := -1; i <= 1; i++ {
 		for j := -1; j <= 1; j++ {
-			if i == 0 && j == 0 {
-			} else {
-				thing := util.Cell{X: cell.X + i%p.ImageWidth, Y: cell.Y + j%p.ImageHeight}
-				result = append(result, thing)
+			if !(i == 0 && j == 0) {
+				next := util.Cell{X: cell.X + j, Y: cell.Y + i}
+				next = wrap(next, p)
+				adjacent = append(adjacent, next)
 			}
 		}
 	}
-	return result
+	return adjacent
 }
 
 // return how many cells in a list are black
-func countAdjacentCells(cell util.Cell, world [][]byte, p Params) int {
+func countAdjacentCells(current util.Cell, world [][]byte, p Params) int {
 	count := 0
-	cells := getAdjacentCells(util.Cell{X: cell.X, Y: cell.Y}, p)
+	cells := getAdjacentCells(current, p)
 	for _, cell := range cells {
 		//count += world[cell.Y][cell.X] / 255
 		if world[cell.Y][cell.X] == 255 {
@@ -70,46 +103,58 @@ func getInitialWorld(input <-chan byte, p Params) [][]byte {
 }
 
 // writes board state to output
-func writeToOutput(world [][]byte, output chan<- byte, p Params) {}
+func writeToOutput(world [][]byte, p Params, c chan<- Event) {
+	var output []util.Cell
+	for i := 0; i < p.ImageHeight; i++ {
+		for j := 0; j < p.ImageWidth; j++ {
+			if world[i][j] == 255 {
+				output = append(output, util.Cell{X: j, Y: i})
+			}
+		}
+	}
+	//printCells(output)
+	c <- FinalTurnComplete{p.Turns, output}
+}
 
-// get next board state
+// get next board state and flipped cells
 // TODO: make this parallel
-func simulateTurn(world [][]byte, p Params) [][]byte {
+func simulateTurn(world [][]byte, p Params) ([]util.Cell, [][]byte) {
 	// initialise 2D slice of rows
 	newWorld := make([][]byte, p.ImageHeight)
+	var flipped []util.Cell
 	for i := 0; i < p.ImageHeight; i++ {
 		// initialise row, set the contents of the row accordingly
 		newWorld[i] = make([]byte, p.ImageWidth)
 		for j := 0; j < p.ImageWidth; j++ {
-			newWorld[i][j] = getNextCell(util.Cell{X: i, Y: j}, world, p)
+			// check for flipped cells
+			cell := util.Cell{X: j, Y: i}
+			old := newWorld[i][j]
+			next := getNextCell(cell, world, p)
+			if old != next {
+				flipped = append(flipped, cell)
+			}
+			newWorld[i][j] = next
 		}
 	}
-	return newWorld
+	//printCells(flipped)
+	return flipped, newWorld
 }
 
 // distributor divides the work between workers and interacts with other goroutines.
 func distributor(p Params, c distributorChannels) {
-	fmt.Println("called distributor")
+	c.ioCommand <- ioInput
+	c.ioFilename <- getFilename(p)
 	world := getInitialWorld(c.ioInput, p)
-	fmt.Println("hi")
 
 	// execute all turns of the Game of Life.
-	for l := 0; l < p.Turns; l++ {
-		world = simulateTurn(world, p)
-		//c.events <- StateChange{turn, Executing}
+	for turn := 0; turn < p.Turns; turn++ {
+		var flipped []util.Cell
+		flipped, world = simulateTurn(world, p)
+		c.events <- CellsFlipped{turn, flipped}
+		c.events <- StateChange{turn, Executing}
 	}
 
-	output := make([]util.Cell, p.ImageHeight*p.ImageWidth)
-	for i := 0; i < p.ImageHeight; i++ {
-		for j := 0; j < p.ImageWidth; j++ {
-			if world[i][j] == 255 {
-				output = append(output, util.Cell{X: i, Y: j})
-			}
-		}
-	}
-
-	// TODO: Report the final state using FinalTurnCompleteEvent.
-	c.events <- FinalTurnComplete{p.Turns, output}
+	writeToOutput(world, p, c.events)
 
 	// Make sure that the Io has finished any output before exiting.
 	c.ioCommand <- ioCheckIdle
