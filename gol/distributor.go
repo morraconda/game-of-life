@@ -118,11 +118,11 @@ func writeToOutput(world [][]byte, p Params, c chan<- Event) {
 
 // get next board state and flipped cells
 // TODO: make this parallel
-func simulateTurn(world [][]byte, p Params) ([]util.Cell, [][]byte) {
+func simulateTurn(world [][]byte, startY int, p Params, outWorld chan<- [][]byte, outFlipped chan<- []util.Cell) {
 	// initialise 2D slice of rows
 	newWorld := make([][]byte, p.ImageHeight)
 	var flipped []util.Cell
-	for i := 0; i < p.ImageHeight; i++ {
+	for i := startY; i < p.ImageHeight/p.Threads; i++ {
 		// initialise row, set the contents of the row accordingly
 		newWorld[i] = make([]byte, p.ImageWidth)
 		for j := 0; j < p.ImageWidth; j++ {
@@ -137,7 +137,9 @@ func simulateTurn(world [][]byte, p Params) ([]util.Cell, [][]byte) {
 		}
 	}
 	//printCells(flipped)
-	return flipped, newWorld
+	outWorld <- newWorld
+	outFlipped <- flipped
+	return
 }
 
 // distributor divides the work between workers and interacts with other goroutines.
@@ -148,8 +150,41 @@ func distributor(p Params, c distributorChannels) {
 
 	// execute all turns of the Game of Life.
 	for turn := 0; turn < p.Turns; turn++ {
+		newWorld := make([][]byte, p.ImageHeight)
+		for i := 0; i < p.ImageHeight; i++ {
+			newWorld[i] = make([]byte, p.ImageWidth)
+		}
 		var flipped []util.Cell
-		flipped, world = simulateTurn(world, p)
+		var startY = 0
+
+		//Make return channels for workers
+		worldChans := make([]chan [][]uint8, p.Threads)
+		for i := 0; i < p.Threads; i++ {
+			worldChans[i] = make(chan [][]uint8)
+		}
+		flippedChans := make([]chan []util.Cell, p.Threads)
+		for i := 0; i < p.Threads; i++ {
+			flippedChans[i] = make(chan []util.Cell)
+		}
+
+		//Dispatch workers
+		incrementY := p.ImageHeight / p.Threads
+		for i := 0; i < p.Threads; i++ {
+			go simulateTurn(world, startY, p, worldChans[i], flippedChans[i])
+			startY += incrementY
+		}
+
+		//Receive data from workers
+		for i := 0; i < p.Threads; i++ {
+			select {
+			case worldData := <-worldChans[i]:
+				copy(newWorld, worldData)
+			case flippedData := <-flippedChans[i]:
+				flipped = append(flipped, flippedData...)
+			}
+		}
+
+		world = newWorld
 		c.events <- CellsFlipped{turn, flipped}
 		c.events <- StateChange{turn, Executing}
 	}
