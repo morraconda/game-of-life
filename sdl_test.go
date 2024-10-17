@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"uk.ac.bris.cs/gameoflife/gol/stubs"
 
 	"uk.ac.bris.cs/gameoflife/gol"
 )
@@ -14,7 +15,7 @@ func TestSdl(t *testing.T) {
 }
 
 func testSdlTurn(t *testing.T) {
-	params := gol.Params{
+	params := stubs.Params{
 		Turns:       100,
 		Threads:     8,
 		ImageWidth:  512,
@@ -43,7 +44,7 @@ func testSdlTurn(t *testing.T) {
 }
 
 func testSdlImages(t *testing.T) {
-	params := gol.Params{
+	params := stubs.Params{
 		Turns:       100,
 		Threads:     8,
 		ImageWidth:  512,
@@ -97,7 +98,7 @@ func testSdlImages(t *testing.T) {
 }
 
 func testSdlAlive(t *testing.T) {
-	params := gol.Params{
+	params := stubs.Params{
 		Turns:       100,
 		Threads:     8,
 		ImageWidth:  512,

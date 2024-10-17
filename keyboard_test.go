@@ -4,6 +4,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"uk.ac.bris.cs/gameoflife/gol/stubs"
 
 	"uk.ac.bris.cs/gameoflife/gol"
 )
@@ -18,7 +19,7 @@ func TestKeyboard(t *testing.T) {
 }
 
 func testKeyboardP(t *testing.T) {
-	params := gol.Params{
+	params := stubs.Params{
 		Turns:       20,
 		Threads:     8,
 		ImageWidth:  512,
@@ -67,7 +68,7 @@ func testKeyboardP(t *testing.T) {
 }
 
 func testKeyboardS(t *testing.T) {
-	params := gol.Params{
+	params := stubs.Params{
 		Turns:       100000000,
 		Threads:     8,
 		ImageWidth:  512,
@@ -99,7 +100,7 @@ func testKeyboardS(t *testing.T) {
 }
 
 func testKeyboardQ(t *testing.T) {
-	params := gol.Params{
+	params := stubs.Params{
 		Turns:       100000000,
 		Threads:     8,
 		ImageWidth:  512,
@@ -131,7 +132,7 @@ func testKeyboardQ(t *testing.T) {
 }
 
 func testKeyboardPS(t *testing.T) {
-	params := gol.Params{
+	params := stubs.Params{
 		Turns:       100000000,
 		Threads:     8,
 		ImageWidth:  512,
@@ -168,7 +169,7 @@ func testKeyboardPS(t *testing.T) {
 }
 
 func testKeyboardPQ(t *testing.T) {
-	params := gol.Params{
+	params := stubs.Params{
 		Turns:       100000000,
 		Threads:     8,
 		ImageWidth:  512,

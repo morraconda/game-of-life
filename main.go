@@ -3,10 +3,11 @@ package main
 import (
 	"flag"
 	"fmt"
-	"runtime"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
+	"uk.ac.bris.cs/gameoflife/gol/stubs"
 
 	"uk.ac.bris.cs/gameoflife/gol"
 	"uk.ac.bris.cs/gameoflife/sdl"
@@ -15,7 +16,7 @@ import (
 // main is the function called when starting Game of Life with 'go run .'
 func main() {
 	runtime.LockOSThread()
-	var params gol.Params
+	var params stubs.Params
 
 	flag.IntVar(
 		&params.Threads,

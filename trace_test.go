@@ -5,12 +5,13 @@ import (
 	"runtime/trace"
 	"testing"
 	"uk.ac.bris.cs/gameoflife/gol"
+	"uk.ac.bris.cs/gameoflife/gol/stubs"
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
 // TestTrace is a special test to be used to generate traces - not a real test
 func TestTrace(t *testing.T) {
-	traceParams := gol.Params{
+	traceParams := stubs.Params{
 		Turns:       10,
 		Threads:     4,
 		ImageWidth:  64,

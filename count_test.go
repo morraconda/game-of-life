@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"testing"
 	"time"
+	"uk.ac.bris.cs/gameoflife/gol/stubs"
 
 	"uk.ac.bris.cs/gameoflife/gol"
 	"uk.ac.bris.cs/gameoflife/util"
@@ -15,7 +16,7 @@ import (
 // TestAlive will automatically check the 512x512 cell counts for the first 5 messages.
 // You can manually check your counts by looking at CSVs provided in check/alive
 func TestAlive(t *testing.T) {
-	p := gol.Params{
+	p := stubs.Params{
 		Turns:       100000000,
 		Threads:     8,
 		ImageWidth:  512,

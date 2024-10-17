@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"uk.ac.bris.cs/gameoflife/gol/stubs"
 
 	"uk.ac.bris.cs/gameoflife/gol"
 	"uk.ac.bris.cs/gameoflife/util"
@@ -42,7 +43,7 @@ func checkEqualBoard(given, expected []util.Cell) bool {
 	return true
 }
 
-func boardFail(t *testing.T, given, expected []util.Cell, p gol.Params) bool {
+func boardFail(t *testing.T, given, expected []util.Cell, p stubs.Params) bool {
 	errorString := fmt.Sprintf("-----------------\n\n  FAILED TEST\n  %vx%v\n  %d Workers\n  %d Turns\n", p.ImageWidth, p.ImageHeight, p.Threads, p.Turns)
 	if p.ImageWidth == 16 && p.ImageHeight == 16 {
 		errorString = errorString + util.AliveCellsToString(given, expected, p.ImageWidth, p.ImageHeight)
@@ -51,7 +52,7 @@ func boardFail(t *testing.T, given, expected []util.Cell, p gol.Params) bool {
 	return false
 }
 
-func assertEqualBoard(t *testing.T, given, expected []util.Cell, p gol.Params) bool {
+func assertEqualBoard(t *testing.T, given, expected []util.Cell, p stubs.Params) bool {
 	equal := checkEqualBoard(given, expected)
 
 	if !equal {
@@ -111,7 +112,7 @@ func readAliveCells(path string, width, height int) []util.Cell {
 
 type Tester struct {
 	t            *testing.T
-	params       gol.Params
+	params       stubs.Params
 	keyPresses   chan<- rune
 	events       <-chan gol.Event
 	eventWatcher chan gol.Event
@@ -126,7 +127,7 @@ type Tester struct {
 
 func MakeTester(
 	t *testing.T,
-	params gol.Params,
+	params stubs.Params,
 	keyPresses chan<- rune,
 	events <-chan gol.Event,
 	golDone <-chan bool,

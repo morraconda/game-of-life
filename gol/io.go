@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"uk.ac.bris.cs/gameoflife/gol/stubs"
 
 	"uk.ac.bris.cs/gameoflife/util"
 )
@@ -19,7 +20,7 @@ type ioChannels struct {
 
 // ioState is the internal ioState of the io goroutine.
 type ioState struct {
-	params   Params
+	params   stubs.Params
 	channels ioChannels
 }
 
@@ -126,7 +127,7 @@ func (io *ioState) readPgmImage() {
 }
 
 // startIo should be the entrypoint of the io goroutine.
-func startIo(p Params, c ioChannels) {
+func startIo(p stubs.Params, c ioChannels) {
 	io := ioState{
 		params:   p,
 		channels: c,

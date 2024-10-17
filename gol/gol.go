@@ -1,15 +1,11 @@
 package gol
 
+import "uk.ac.bris.cs/gameoflife/gol/stubs"
+
 // Params provides the details of how to run the Game of Life and which image to load.
-type Params struct {
-	Turns       int
-	Threads     int
-	ImageWidth  int
-	ImageHeight int
-}
 
 // Run starts the processing of Game of Life. It should initialise channels and goroutines.
-func Run(p Params, events chan<- Event, keyPresses <-chan rune) {
+func Run(p stubs.Params, events chan<- Event, keyPresses <-chan rune) {
 
 	//	TODO: Put the missing channels in here.
 

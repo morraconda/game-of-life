@@ -3,6 +3,7 @@ package gol
 import (
 	"fmt"
 	"strconv"
+	"uk.ac.bris.cs/gameoflife/gol/stubs"
 
 	"uk.ac.bris.cs/gameoflife/util"
 )
@@ -28,68 +29,12 @@ func printCells(cells []util.Cell) {
 }
 
 // get filename from params
-func getFilename(p Params) string {
+func getFilename(p stubs.Params) string {
 	return strconv.Itoa(p.ImageWidth) + "x" + strconv.Itoa(p.ImageHeight)
 }
 
-// returns in-bounds version of a cell if out of bounds
-func wrap(cell util.Cell, p Params) util.Cell {
-	if cell.X == -1 {
-		cell.X = p.ImageWidth - 1
-	} else if cell.X == p.ImageHeight {
-		cell.X = 0
-	}
-
-	if cell.Y == -1 {
-		cell.Y = p.ImageHeight - 1
-	} else if cell.Y == p.ImageHeight {
-		cell.Y = 0
-	}
-	return cell
-}
-
-// returns list of cells adjacent to the one given, accounting for wraparounds
-func getAdjacentCells(cell util.Cell, p Params) []util.Cell {
-	var adjacent []util.Cell
-	for i := -1; i <= 1; i++ {
-		for j := -1; j <= 1; j++ {
-			if !(i == 0 && j == 0) {
-				next := util.Cell{X: cell.X + j, Y: cell.Y + i}
-				next = wrap(next, p)
-				adjacent = append(adjacent, next)
-			}
-		}
-	}
-	return adjacent
-}
-
-// return how many cells in a list are black
-func countAdjacentCells(current util.Cell, world [][]byte, p Params) int {
-	count := 0
-	cells := getAdjacentCells(current, p)
-	for _, cell := range cells {
-		//count += world[cell.Y][cell.X] / 255
-		if world[cell.Y][cell.X] == 255 {
-			count++
-		}
-	}
-	return count
-}
-
-// get next value of a cell, given a world
-func getNextCell(cell util.Cell, world [][]byte, p Params) byte {
-	neighbours := countAdjacentCells(cell, world, p)
-	if neighbours == 3 {
-		return 255
-	} else if neighbours == 2 {
-		return world[cell.Y][cell.X]
-	} else {
-		return 0
-	}
-}
-
 // gets initial 2D slice from input
-func getInitialWorld(input <-chan byte, p Params) [][]byte {
+func getInitialWorld(input <-chan byte, p stubs.Params) [][]byte {
 	// initialise 2D slice of rows
 	world := make([][]byte, p.ImageHeight)
 	for i := 0; i < p.ImageHeight; i++ {
@@ -103,7 +48,7 @@ func getInitialWorld(input <-chan byte, p Params) [][]byte {
 }
 
 // writes board state to output
-func writeToOutput(world [][]byte, p Params, c chan<- Event) {
+func writeToOutput(world [][]byte, p stubs.Params, c chan<- Event) {
 	var output []util.Cell
 	for i := 0; i < p.ImageHeight; i++ {
 		for j := 0; j < p.ImageWidth; j++ {
@@ -116,34 +61,8 @@ func writeToOutput(world [][]byte, p Params, c chan<- Event) {
 	c <- FinalTurnComplete{p.Turns, output}
 }
 
-// get next board state and flipped cells
-// TODO: make this parallel
-func simulateTurn(world [][]byte, startY int, endY int, p Params, outWorld chan<- [][]byte, outFlipped chan<- []util.Cell) {
-	// initialise 2D slice of rows
-	newWorld := make([][]byte, endY-startY)
-	var flipped []util.Cell
-	for i := startY; i < endY; i++ {
-		// initialise row, set the contents of the row accordingly
-		newWorld[i-startY] = make([]byte, p.ImageWidth)
-		for j := 0; j < p.ImageWidth; j++ {
-			// check for flipped cells
-			cell := util.Cell{X: j, Y: i}
-			old := newWorld[i-startY][j]
-			next := getNextCell(cell, world, p)
-			if old != next {
-				flipped = append(flipped, cell)
-			}
-			newWorld[i-startY][j] = next
-		}
-	}
-	//printCells(flipped)
-	outWorld <- newWorld
-	outFlipped <- flipped
-	return
-}
-
 // distributor divides the work between workers and interacts with other goroutines.
-func distributor(p Params, c distributorChannels) {
+func distributor(p stubs.Params, c distributorChannels) {
 	c.ioCommand <- ioInput
 	c.ioFilename <- getFilename(p)
 	world := getInitialWorld(c.ioInput, p)

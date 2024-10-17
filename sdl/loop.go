@@ -2,15 +2,16 @@ package sdl
 
 import (
 	"fmt"
-	"time"
 	"github.com/veandco/go-sdl2/sdl"
+	"time"
 	"uk.ac.bris.cs/gameoflife/gol"
+	"uk.ac.bris.cs/gameoflife/gol/stubs"
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
 const FPS = 60
 
-func Run(p gol.Params, events <-chan gol.Event, keyPresses chan<- rune) {
+func Run(p stubs.Params, events <-chan gol.Event, keyPresses chan<- rune) {
 	w := NewWindow(int32(p.ImageWidth), int32(p.ImageHeight))
 	defer w.Destroy()
 	dirty := false
@@ -55,7 +56,7 @@ sdl:
 				w.FlipPixel(e.Cell.X, e.Cell.Y)
 			case gol.CellsFlipped:
 				for _, cell := range e.Cells {
-					w.FlipPixel(cell.X, cell.Y) 
+					w.FlipPixel(cell.X, cell.Y)
 				}
 			case gol.TurnComplete:
 				dirty = true
