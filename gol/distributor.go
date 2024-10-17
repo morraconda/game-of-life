@@ -118,22 +118,22 @@ func writeToOutput(world [][]byte, p Params, c chan<- Event) {
 
 // get next board state and flipped cells
 // TODO: make this parallel
-func simulateTurn(world [][]byte, startY int, p Params, outWorld chan<- [][]byte, outFlipped chan<- []util.Cell) {
+func simulateTurn(world [][]byte, startY int, endY int, p Params, outWorld chan<- [][]byte, outFlipped chan<- []util.Cell) {
 	// initialise 2D slice of rows
-	newWorld := make([][]byte, p.ImageHeight)
+	newWorld := make([][]byte, endY-startY)
 	var flipped []util.Cell
-	for i := startY; i < p.ImageHeight/p.Threads; i++ {
+	for i := startY; i < endY; i++ {
 		// initialise row, set the contents of the row accordingly
-		newWorld[i] = make([]byte, p.ImageWidth)
+		newWorld[i-startY] = make([]byte, p.ImageWidth)
 		for j := 0; j < p.ImageWidth; j++ {
 			// check for flipped cells
 			cell := util.Cell{X: j, Y: i}
-			old := newWorld[i][j]
+			old := newWorld[i-startY][j]
 			next := getNextCell(cell, world, p)
 			if old != next {
 				flipped = append(flipped, cell)
 			}
-			newWorld[i][j] = next
+			newWorld[i-startY][j] = next
 		}
 	}
 	//printCells(flipped)
@@ -150,10 +150,7 @@ func distributor(p Params, c distributorChannels) {
 
 	// execute all turns of the Game of Life.
 	for turn := 0; turn < p.Turns; turn++ {
-		newWorld := make([][]byte, p.ImageHeight)
-		for i := 0; i < p.ImageHeight; i++ {
-			newWorld[i] = make([]byte, p.ImageWidth)
-		}
+		var newWorld [][]byte
 		var flipped []util.Cell
 		var startY = 0
 
@@ -170,25 +167,26 @@ func distributor(p Params, c distributorChannels) {
 		//Dispatch workers
 		incrementY := p.ImageHeight / p.Threads
 		for i := 0; i < p.Threads; i++ {
-			go simulateTurn(world, startY, p, worldChans[i], flippedChans[i])
+			if i == p.Threads-1 {
+				go simulateTurn(world, startY, p.ImageHeight, p, worldChans[i], flippedChans[i])
+			} else {
+				go simulateTurn(world, startY, (p.ImageHeight/p.Threads)+startY, p, worldChans[i], flippedChans[i])
+			}
 			startY += incrementY
 		}
 
 		//Receive data from workers
 		for i := 0; i < p.Threads; i++ {
-			select {
-			case worldData := <-worldChans[i]:
-				copy(newWorld, worldData)
-			case flippedData := <-flippedChans[i]:
-				flipped = append(flipped, flippedData...)
-			}
+			worldData := <-worldChans[i]
+			newWorld = append(newWorld, worldData...)
+			flippedData := <-flippedChans[i]
+			flipped = append(flipped, flippedData...)
 		}
 
 		world = newWorld
 		c.events <- CellsFlipped{turn, flipped}
 		c.events <- StateChange{turn, Executing}
 	}
-
 	writeToOutput(world, p, c.events)
 
 	// Make sure that the Io has finished any output before exiting.
