@@ -17,15 +17,9 @@ type distributorChannels struct {
 	ioInput    <-chan uint8
 }
 
-// prints cell contents
-func printCell(cell util.Cell) {
-	fmt.Printf("(%d, %d) ", cell.X, cell.Y)
-}
-
-func printCells(cells []util.Cell) {
-	for _, cell := range cells {
-		printCell(cell)
-	}
+func checkIOIdle(c distributorChannels) {
+	c.ioCommand <- ioCheckIdle
+	<-c.ioIdle
 }
 
 // get filename from params
@@ -33,8 +27,8 @@ func getInputFilename(p Params) string {
 	return fmt.Sprintf("%dx%d", p.ImageWidth, p.ImageHeight)
 }
 
-func getOutputFilename(p Params) string {
-	return fmt.Sprintf("%dx%dx%d", p.ImageWidth, p.ImageHeight, p.Turns)
+func getOutputFilename(p Params, turn int) string {
+	return fmt.Sprintf("%dx%dx%d", p.ImageWidth, p.ImageHeight, turn)
 }
 
 // returns in-bounds version of a cell if out of bounds
@@ -94,14 +88,15 @@ func getNextCell(cell util.Cell, world [][]byte, p Params) byte {
 }
 
 // gets initial 2D slice from input
-func getInitialWorld(input <-chan byte, p Params) [][]byte {
-	// initialise 2D slice of rows
+func getInitialWorld(c distributorChannels, p Params) [][]byte {
 	world := make([][]byte, p.ImageHeight)
+	c.ioCommand <- ioInput
+	c.ioFilename <- getInputFilename(p)
 	for i := 0; i < p.ImageHeight; i++ {
 		// initialise row, set the contents of the row accordingly
 		world[i] = make([]byte, p.ImageWidth)
 		for j := 0; j < p.ImageWidth; j++ {
-			world[i][j] = <-input
+			world[i][j] = <-c.ioInput
 		}
 	}
 	return world
@@ -109,13 +104,17 @@ func getInitialWorld(input <-chan byte, p Params) [][]byte {
 
 // writes board state to output
 func writeToOutput(world [][]byte, turn int, p Params,
-	eventChan chan<- Event, outputChan chan<- byte) {
+	c distributorChannels) {
+	filename := getOutputFilename(p, turn)
+	c.ioCommand <- ioOutput
+	c.ioFilename <- filename
 	for i := 0; i < p.ImageHeight; i++ {
 		for j := 0; j < p.ImageWidth; j++ {
-			outputChan <- world[i][j]
+			c.ioOutput <- world[i][j]
 		}
 	}
-	eventChan <- ImageOutputComplete{turn, getOutputFilename(p)}
+	checkIOIdle(c)
+	c.events <- ImageOutputComplete{turn, filename}
 }
 
 // get list of alive cells from a world
@@ -158,7 +157,7 @@ func simulateTurn(world [][]byte, startY int, endY int, p Params,
 }
 
 // reports state every 2 seconds
-func reportState(turn *int, world *[][]byte, c chan<- Event, done <-chan bool) {
+func reportState(turn *int, world *[][]byte, eventChan chan<- Event, done <-chan bool) {
 	finished := false
 	for !finished {
 		select {
@@ -166,48 +165,69 @@ func reportState(turn *int, world *[][]byte, c chan<- Event, done <-chan bool) {
 			finished = true
 		case <-time.After(2 * time.Second):
 			alive := getAliveCells(*world)
-			c <- Event(AliveCellsCount{*turn, len(alive)})
+			eventChan <- AliveCellsCount{*turn, len(alive)}
 		}
 	}
 }
 
-// TODO: handle user keypresses
-func handleKeypress(turn *int, world *[][]byte, keypresses <-chan rune, eventChan chan<- Event, done <-chan bool) {
+// handle user keypresses
+// an input of true to the pauseChan means pause, false means quit
+func handleKeypresses(turn *int, world *[][]byte, p Params,
+	keypresses <-chan rune, c distributorChannels, pauseChan chan<- bool, done <-chan bool) {
 	finished := false
+	paused := false
 	for !finished {
 		select {
 		case <-done:
 			finished = true
 		case key := <-keypresses:
 			switch key {
+			// save
 			case sdl.K_s:
-				//alive := getAliveCells(*world)
-				//eventChan <- ImageOutputComplete{turn, }
+				go writeToOutput(*world, *turn, p, c)
+			// quit
 			case sdl.K_q:
+				pauseChan <- false
+				finished = true
+			// pause
 			case sdl.K_p:
+				pauseChan <- true
+				paused = !paused
+				if paused {
+					c.events <- StateChange{*turn, Paused}
+				} else {
+					c.events <- StateChange{*turn, Executing}
+				}
 			}
 		}
 	}
 }
 
 // distributor divides the work between workers and interacts with other goroutines.
-func distributor(p Params, c distributorChannels) {
+func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	// init crap
-	c.ioCommand <- ioInput
-	c.ioFilename <- getInputFilename(p)
-	world := getInitialWorld(c.ioInput, p)
 	turn := 0
+	quit := false
+	paused := make(chan bool)
 	finished := make(chan bool)
+	world := getInitialWorld(c, p)
+
 	wg := sync.WaitGroup{}
-	wg.Add(1)
-	// start alive cells ticker
+	wg.Add(2)
+	// start alive cells and keypress goroutines
 	go func() {
 		reportState(&turn, &world, c.events, finished)
 		defer wg.Done()
 	}()
 
+	go func() {
+		handleKeypresses(&turn, &world, p, keypresses, c, paused, finished)
+		defer wg.Done()
+	}()
+
+	c.events <- StateChange{0, Executing}
 	// execute all turns of the Game of Life.
-	for h := 0; h < p.Turns; h++ {
+	for h := 0; !quit && h < p.Turns; h++ {
 		var newWorld [][]byte
 		var flipped []util.Cell
 		var startY = 0
@@ -234,34 +254,44 @@ func distributor(p Params, c distributorChannels) {
 		}
 
 		//Receive data from workers
-		for i := 0; i < p.Threads; i++ {
-			worldData := <-worldChans[i]
-			newWorld = append(newWorld, worldData...)
-			flippedData := <-flippedChans[i]
-			flipped = append(flipped, flippedData...)
+		current := 0
+		for current < p.Threads {
+			select {
+			case pause := <-paused:
+				if pause {
+					pause = <-paused
+				}
+				if !pause {
+					quit = true
+				}
+			case <-finished:
+				quit = true
+			case worldData := <-worldChans[current]:
+				newWorld = append(newWorld, worldData...)
+				flippedData := <-flippedChans[current]
+				flipped = append(flipped, flippedData...)
+				current++
+			}
 		}
-
+		// update new state
+		c.events <- CellsFlipped{turn, flipped}
 		world = newWorld
 		turn++
-		c.events <- CellsFlipped{turn, flipped}
-		c.events <- StateChange{turn, Executing}
 	}
-
-	c.ioCommand <- ioOutput
-	c.ioFilename <- getOutputFilename(p)
-	writeToOutput(world, p.Turns, p, c.events, c.ioOutput)
-
-	// Make sure that the Io has finished any output before exiting.
-	c.ioCommand <- ioCheckIdle
-	<-c.ioIdle
-
-	c.events <- StateChange{p.Turns, Quitting}
-	aliveCells := getAliveCells(world)
-	c.events <- FinalTurnComplete{p.Turns, aliveCells}
-
-	// close alive cells reporting
+	// close alive cells and keypress goroutines
 	finished <- true
+	if !quit {
+		finished <- true
+	}
+	aliveCells := getAliveCells(world)
+	// write state to output
+	c.events <- FinalTurnComplete{turn, aliveCells}
+	writeToOutput(world, turn, p, c)
+	c.events <- StateChange{turn, Quitting}
+
+	// wait for alive cells ticker and keypress goroutines to close
 	wg.Wait()
+	checkIOIdle(c)
 	// Close the channel to stop the SDL goroutine gracefully. Removing may cause deadlock.
 	close(c.events)
 }
