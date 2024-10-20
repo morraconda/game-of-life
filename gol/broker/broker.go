@@ -12,6 +12,7 @@ import (
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
+// Public variables
 var workerCount int
 var height int
 var width int
@@ -28,48 +29,36 @@ var wg sync.WaitGroup
 var wgMX sync.RWMutex
 var pAddr *string
 
+// Deep copy one array into another
 func deepCopy(output *[][]byte, original *[][]byte) {
 	for i := 0; i < len(*original); i++ {
 		(*output)[i] = (*original)[i]
 	}
 }
 
-func spawnWorkers(number int) {
-	for i := 0; i < number; i++ {
-		// Allocate a free address
-		listener, err := net.Listen("tcp", ":0")
-		if err != nil {
-			panic(err)
-		}
-		defer listener.Close()
-		port := listener.Addr().(*net.TCPAddr).Port
-
-		// Start a worker at this address
-		cmd := exec.Command("go", "run", "../server/server.go", "-ip=127.0.0.1:"+strconv.Itoa(port), "-broker=127.0.0.1:"+*pAddr)
-		err = cmd.Start()
-		workerCount += 1
-		if err != nil {
-			panic(err)
-		}
-		//workerCount += 1
-		fmt.Println("Spawned worker at:", strconv.Itoa(port))
+// Spawn a new worker, this worker will dial iteself into the broker
+func spawnWorkers() {
+	// Allocate a random free address
+	listener, err := net.Listen("tcp", ":0")
+	if err != nil {
+		panic(err)
 	}
-}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
 
-func nextState(res *stubs.Update) {
-	publish()
-	wg.Wait()
-	deepCopy(&world, &newWorld)
-	res.Flipped = flipped
-	flipped = nil
+	// Start a worker at this address
+	cmd := exec.Command("go", "run", "../server/server.go", "-ip=127.0.0.1:"+strconv.Itoa(port), "-broker=127.0.0.1:"+*pAddr)
+	err = cmd.Start()
+	workerCount += 1
+	if err != nil {
+		panic(err)
+	}
 }
 
 // Receive a board and slice it up into jobs
 func publish() {
 	splitRequest := new(stubs.Request)
-	splitRequest.World = world
-	splitRequest.Width = width
-	splitRequest.Height = height
+	splitRequest.World, splitRequest.Width, splitRequest.Height = world, width, height
 	incrementY := height / threads
 	startY := 0
 	for i := 0; i < threads; i++ {
@@ -89,11 +78,12 @@ func publish() {
 	}
 }
 
+// Routine ran once per server instance, takes jobs from the queue and sends them to the server
 func subscriberLoop(client *rpc.Client, callback string, id int) {
 	for {
 		//Take a job from the job queue
 		job := <-jobs
-		response := new(stubs.Response)
+		response := new(stubs.Response) // Empty response
 		err := client.Call(callback, job, response)
 		if err != nil {
 			fmt.Println("Error calling: ", err)
@@ -105,7 +95,6 @@ func subscriberLoop(client *rpc.Client, callback string, id int) {
 		for i := 0; i < len(response.World); i++ {
 			newWorldMX.Lock()
 			flippedMX.Lock()
-
 			newWorld[job.StartY+i] = response.World[i]
 			flipped = append(flipped, response.Flipped...)
 			flippedMX.Unlock()
@@ -117,23 +106,20 @@ func subscriberLoop(client *rpc.Client, callback string, id int) {
 	}
 }
 
-func subscribe(req stubs.Subscription) {
-	client, err := rpc.Dial("tcp", req.FactoryAddress)
-	if err == nil {
-		go subscriberLoop(client, req.Callback, workerCount)
-	} else {
-		fmt.Println("Error subscribing: ", err)
-	}
-	return
-}
-
 type Broker struct{}
 
+// NextState Called by distributor to increment the game by one step
 func (b *Broker) NextState(req stubs.StatusReport, res *stubs.Update) (err error) {
-	nextState(res)
+	publish()
+	// Wait until all jobs have been processed
+	wg.Wait()
+	deepCopy(&world, &newWorld)
+	res.Flipped = flipped
+	flipped = nil
 	return
 }
 
+// Start Called by distributor to load initial values
 func (b *Broker) Start(input stubs.Input, res *stubs.StatusReport) (err error) {
 	height = input.Height
 	width = input.Width
@@ -143,12 +129,16 @@ func (b *Broker) Start(input stubs.Input, res *stubs.StatusReport) (err error) {
 	for i := range newWorld {
 		newWorld[i] = make([]byte, width)
 	}
+	// If there are not enough workers currently available, spawn more
 	if threads > workerCount {
-		spawnWorkers(threads - workerCount)
+		for i := 0; i < threads-workerCount; i++ {
+			spawnWorkers()
+		}
 	}
 	return
 }
 
+// Finish Called by distributor to return final world
 func (b *Broker) Finish(req stubs.StatusReport, res *stubs.Output) (err error) {
 	res.World = make([][]byte, len(world))
 	for i := range res.World {
@@ -158,9 +148,14 @@ func (b *Broker) Finish(req stubs.StatusReport, res *stubs.Output) (err error) {
 	return
 }
 
+// Subscribe Called by Server to subscribe to jobs
 func (b *Broker) Subscribe(req stubs.Subscription, res *stubs.StatusReport) (err error) {
-	//fmt.Println("Subscription request from", req.FactoryAddress)
-	subscribe(req)
+	client, err := rpc.Dial("tcp", req.FactoryAddress)
+	if err == nil {
+		go subscriberLoop(client, req.Callback, workerCount)
+	} else {
+		fmt.Println("Error subscribing: ", err)
+	}
 	return
 }
 

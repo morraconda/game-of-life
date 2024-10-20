@@ -91,12 +91,9 @@ func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) (err erro
 			newWorld[i-req.StartY][j] = next
 		}
 	}
-	//printCells(flipped)
 
 	res.World = newWorld
-	//outWorld <- newWorld
 	res.Flipped = flipped
-	//outFlipped <- flipped
 	return
 }
 
