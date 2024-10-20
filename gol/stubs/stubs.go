@@ -5,6 +5,8 @@ import (
 )
 
 var Subscribe = "Broker.Subscribe"
+var Close = "Compute.Close"
+
 var NextState = "Broker.NextState"
 var Start = "Broker.Start"
 var Finish = "Broker.Finish"

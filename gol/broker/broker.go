@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"net/rpc"
+	"os/exec"
+	"strconv"
 	"sync"
 	"uk.ac.bris.cs/gameoflife/gol/stubs"
 	"uk.ac.bris.cs/gameoflife/util"
@@ -24,10 +26,33 @@ var flipped []util.Cell
 var flippedMX sync.RWMutex
 var wg sync.WaitGroup
 var wgMX sync.RWMutex
+var pAddr *string
 
 func deepCopy(output *[][]byte, original *[][]byte) {
 	for i := 0; i < len(*original); i++ {
 		(*output)[i] = (*original)[i]
+	}
+}
+
+func spawnWorkers(number int) {
+	for i := 0; i < number; i++ {
+		// Allocate a free address
+		listener, err := net.Listen("tcp", ":0")
+		if err != nil {
+			panic(err)
+		}
+		defer listener.Close()
+		port := listener.Addr().(*net.TCPAddr).Port
+
+		// Start a worker at this address
+		cmd := exec.Command("go", "run", "../server/server.go", "-ip=127.0.0.1:"+strconv.Itoa(port), "-broker=127.0.0.1:"+*pAddr)
+		err = cmd.Start()
+		workerCount += 1
+		if err != nil {
+			panic(err)
+		}
+		//workerCount += 1
+		fmt.Println("Spawned worker at:", strconv.Itoa(port))
 	}
 }
 
@@ -64,7 +89,7 @@ func publish() {
 	}
 }
 
-func subscriberLoop(client *rpc.Client, callback string) {
+func subscriberLoop(client *rpc.Client, callback string, id int) {
 	for {
 		//Take a job from the job queue
 		job := <-jobs
@@ -95,7 +120,7 @@ func subscriberLoop(client *rpc.Client, callback string) {
 func subscribe(req stubs.Subscription) {
 	client, err := rpc.Dial("tcp", req.FactoryAddress)
 	if err == nil {
-		go subscriberLoop(client, req.Callback)
+		go subscriberLoop(client, req.Callback, workerCount)
 	} else {
 		fmt.Println("Error subscribing: ", err)
 	}
@@ -110,10 +135,6 @@ func (b *Broker) NextState(req stubs.StatusReport, res *stubs.Update) (err error
 }
 
 func (b *Broker) Start(input stubs.Input, res *stubs.StatusReport) (err error) {
-	if !(workerCount >= input.Threads) {
-		fmt.Println("Error: not enough workers for thread count")
-		return fmt.Errorf("not enough workers")
-	}
 	height = input.Height
 	width = input.Width
 	world = input.World
@@ -121,6 +142,9 @@ func (b *Broker) Start(input stubs.Input, res *stubs.StatusReport) (err error) {
 	newWorld = make([][]byte, height)
 	for i := range newWorld {
 		newWorld[i] = make([]byte, width)
+	}
+	if threads > workerCount {
+		spawnWorkers(threads - workerCount)
 	}
 	return
 }
@@ -135,14 +159,13 @@ func (b *Broker) Finish(req stubs.StatusReport, res *stubs.Output) (err error) {
 }
 
 func (b *Broker) Subscribe(req stubs.Subscription, res *stubs.StatusReport) (err error) {
-	workerCount += 1
-	fmt.Println("Subscription request from", req.FactoryAddress)
+	//fmt.Println("Subscription request from", req.FactoryAddress)
 	subscribe(req)
 	return
 }
 
 func main() {
-	pAddr := flag.String("port", "8030", "Port to listen on")
+	pAddr = flag.String("port", "8030", "Port to listen on")
 	flag.Parse()
 	err := rpc.Register(&Broker{})
 	if err != nil {

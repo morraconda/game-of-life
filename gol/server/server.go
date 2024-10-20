@@ -3,12 +3,16 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log"
 	"net"
 	"net/rpc"
-	"sync"
+	"os"
 	"uk.ac.bris.cs/gameoflife/gol/stubs"
 	"uk.ac.bris.cs/gameoflife/util"
 )
+
+var listener net.Listener
+var stopchan chan bool
 
 // returns in-bounds version of a cell if out of bounds
 func wrap(cell util.Cell, width int, height int) util.Cell {
@@ -96,24 +100,31 @@ func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) (err erro
 	return
 }
 
+func (s *Compute) Close(req stubs.StatusReport, res *stubs.StatusReport) (err error) {
+	stopchan <- true
+	return
+}
+
 func main() {
+	f, err := os.OpenFile("testlogfile", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	if err != nil {
+		log.Fatalf("error opening log: %v", err)
+	}
+	log.SetOutput(f)
 	pAddr := flag.String("ip", "127.0.0.1:8050", "IP and port to listen on")
 	brokerAddr := flag.String("broker", "127.0.0.1:8030", "Address of broker instance")
 	flag.Parse()
-	var wg sync.WaitGroup
-	err := rpc.Register(&Compute{})
+	log.Printf("Worker started at: %s", *pAddr)
+	err = rpc.Register(&Compute{})
 	if err != nil {
-		fmt.Println("Error rpc registering:", err)
-		return
+		log.Fatalf("Failed to register Compute service: %v", err)
 	}
-	wg.Add(1)
 
 	//Start listener
 	go func() {
-		listener, err := net.Listen("tcp", *pAddr)
+		listener, err = net.Listen("tcp", *pAddr)
 		if err != nil {
-			fmt.Println("Error starting listener:", err)
-			return
+			log.Fatalf("Failed to listen on %s: %v", *pAddr, err)
 		}
 		defer listener.Close()
 		rpc.Accept(listener)
@@ -122,10 +133,13 @@ func main() {
 	//Subscribe to jobs
 	server, err := rpc.Dial("tcp", *brokerAddr)
 	if err != nil {
-		fmt.Println("Error connecting to server:", err)
-		return
+		log.Fatalf("Failed to connect to broker: %v", err)
 	}
 	subscription := stubs.Subscription{FactoryAddress: *pAddr, Callback: "Compute.SimulateTurn"}
 	err = server.Call(stubs.Subscribe, subscription, 'a')
-	wg.Wait()
+	select {
+	case <-stopchan:
+		fmt.Println("Worker at", *pAddr, "is shutting down.")
+		return
+	}
 }
