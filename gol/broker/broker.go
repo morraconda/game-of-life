@@ -24,10 +24,16 @@ var flippedMX sync.RWMutex
 var wg sync.WaitGroup
 var wgMX sync.RWMutex
 
+func deepCopy(output *[][]byte, original *[][]byte) {
+	for i := 0; i < len(*original); i++ {
+		(*output)[i] = (*original)[i]
+	}
+}
+
 func nextState(res *stubs.Update) {
 	publish()
 	wg.Wait()
-	world = newWorld
+	deepCopy(&world, &newWorld)
 	res.Flipped = flipped
 	flipped = nil
 }
@@ -65,14 +71,16 @@ func subscriberLoop(client *rpc.Client, callback string) {
 		err := client.Call(callback, job, response)
 		if err != nil {
 			fmt.Println("Error calling: ", err)
+			jobsMX.Lock()
 			jobs <- job
+			jobsMX.Unlock()
 		}
-
 		//Append the results to the new state
-		for i := 0; i < len(newWorld); i++ {
+		for i := 0; i < len(response.World); i++ {
 			newWorldMX.Lock()
 			flippedMX.Lock()
-			newWorld[job.StartY+i] = newWorld[i]
+
+			newWorld[job.StartY+i] = response.World[i]
 			flipped = append(flipped, response.Flipped...)
 			flippedMX.Unlock()
 			newWorldMX.Unlock()
@@ -101,12 +109,23 @@ func (b *Broker) NextState(req stubs.StatusReport, res *stubs.Update) (err error
 }
 
 func (b *Broker) Start(input stubs.Input, res *stubs.StatusReport) (err error) {
-	fmt.Println("New job")
-	worldMX.Lock()
 	height = input.Height
 	width = input.Width
 	world = input.World
-	worldMX.Unlock()
+	threads = input.Threads
+	newWorld = make([][]byte, height)
+	for i := range newWorld {
+		newWorld[i] = make([]byte, width)
+	}
+	return
+}
+
+func (b *Broker) Finish(req stubs.StatusReport, res *stubs.Output) (err error) {
+	res.World = make([][]byte, len(world))
+	for i := range res.World {
+		res.World[i] = make([]byte, len(world[i])) // Make sure each row has the correct width
+	}
+	deepCopy(&res.World, &world)
 	return
 }
 
@@ -119,7 +138,10 @@ func (b *Broker) Subscribe(req stubs.Subscription, res *stubs.StatusReport) (err
 func main() {
 	pAddr := flag.String("port", "8030", "Port to listen on")
 	flag.Parse()
-	rpc.Register(&Broker{})
+	err := rpc.Register(&Broker{})
+	if err != nil {
+		fmt.Println("Error: ", err)
+	}
 	listener, _ := net.Listen("tcp", ":"+*pAddr)
 	defer listener.Close()
 	rpc.Accept(listener)

@@ -7,12 +7,17 @@ import (
 var Subscribe = "Broker.Subscribe"
 var NextState = "Broker.NextState"
 var Start = "Broker.Start"
+var Finish = "Broker.Finish"
 
 type Input struct {
 	World   [][]byte
 	Height  int
 	Width   int
 	Threads int
+}
+
+type Output struct {
+	World [][]byte
 }
 
 type Request struct {

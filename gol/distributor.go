@@ -2,9 +2,10 @@ package gol
 
 import (
 	"fmt"
-	"github.com/veandco/go-sdl2/sdl"
+	"net/rpc"
 	"sync"
 	"time"
+	"uk.ac.bris.cs/gameoflife/gol/stubs"
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
@@ -35,62 +36,6 @@ func getInputFilename(p Params) string {
 
 func getOutputFilename(p Params) string {
 	return fmt.Sprintf("%dx%dx%d", p.ImageWidth, p.ImageHeight, p.Turns)
-}
-
-// returns in-bounds version of a cell if out of bounds
-func wrap(cell util.Cell, p Params) util.Cell {
-	if cell.X == -1 {
-		cell.X = p.ImageWidth - 1
-	} else if cell.X == p.ImageHeight {
-		cell.X = 0
-	}
-
-	if cell.Y == -1 {
-		cell.Y = p.ImageHeight - 1
-	} else if cell.Y == p.ImageHeight {
-		cell.Y = 0
-	}
-	return cell
-}
-
-// returns list of cells adjacent to the one given, accounting for wraparounds
-func getAdjacentCells(cell util.Cell, p Params) []util.Cell {
-	var adjacent []util.Cell
-	for i := -1; i <= 1; i++ {
-		for j := -1; j <= 1; j++ {
-			if !(i == 0 && j == 0) {
-				next := util.Cell{X: cell.X + j, Y: cell.Y + i}
-				next = wrap(next, p)
-				adjacent = append(adjacent, next)
-			}
-		}
-	}
-	return adjacent
-}
-
-// return how many cells in a list are black
-func countAdjacentCells(current util.Cell, world [][]byte, p Params) int {
-	count := 0
-	cells := getAdjacentCells(current, p)
-	for _, cell := range cells {
-		//count += world[cell.Y][cell.X] / 255
-		if world[cell.Y][cell.X] == 255 {
-			count++
-		}
-	}
-	return count
-}
-
-// get next value of a cell, given a world
-func getNextCell(cell util.Cell, world [][]byte, p Params) byte {
-	neighbours := countAdjacentCells(cell, world, p)
-	if neighbours == 3 {
-		return 255
-	} else if neighbours == 2 {
-		return world[cell.Y][cell.X]
-	} else {
-		return 0
-	}
 }
 
 // gets initial 2D slice from input
@@ -131,32 +76,6 @@ func getAliveCells(world [][]byte) []util.Cell {
 	return alive
 }
 
-// get next board state and flipped cells
-func simulateTurn(world [][]byte, startY int, endY int, p Params,
-	outWorld chan<- [][]byte, outFlipped chan<- []util.Cell) {
-	// initialise 2D slice of rows
-	newWorld := make([][]byte, endY-startY)
-	var flipped []util.Cell
-	for i := startY; i < endY; i++ {
-		// initialise row, set the contents of the row accordingly
-		newWorld[i-startY] = make([]byte, p.ImageWidth)
-		for j := 0; j < p.ImageWidth; j++ {
-			// check for flipped cells
-			cell := util.Cell{X: j, Y: i}
-			old := newWorld[i-startY][j]
-			next := getNextCell(cell, world, p)
-			if old != next {
-				flipped = append(flipped, cell)
-			}
-			newWorld[i-startY][j] = next
-		}
-	}
-	//printCells(flipped)
-	outWorld <- newWorld
-	outFlipped <- flipped
-	return
-}
-
 // reports state every 2 seconds
 func reportState(turn *int, world *[][]byte, c chan<- Event, done <-chan bool) {
 	finished := false
@@ -172,6 +91,7 @@ func reportState(turn *int, world *[][]byte, c chan<- Event, done <-chan bool) {
 }
 
 // TODO: handle user keypresses
+/*
 func handleKeypress(turn *int, world *[][]byte, keypresses <-chan rune, eventChan chan<- Event, done <-chan bool) {
 	finished := false
 	for !finished {
@@ -189,13 +109,26 @@ func handleKeypress(turn *int, world *[][]byte, keypresses <-chan rune, eventCha
 		}
 	}
 }
+*/
 
-// distributor divides the work between workers and interacts with other goroutines.
+// distributor executes all turns, sends work to broker
 func distributor(p Params, c distributorChannels) {
+	client, _ := rpc.Dial("tcp", "127.0.0.1:8030")
 	// init crap
 	c.ioCommand <- ioInput
 	c.ioFilename <- getInputFilename(p)
 	world := getInitialWorld(c.ioInput, p)
+	status := new(stubs.StatusReport)
+	input := new(stubs.Input)
+	input.World = world
+	input.Width = p.ImageWidth
+	input.Height = p.ImageHeight
+	input.Threads = p.Threads
+	err := client.Call(stubs.Start, input, &status)
+	if err != nil {
+		fmt.Println("Error: ", err)
+	}
+
 	turn := 0
 	finished := make(chan bool)
 	wg := sync.WaitGroup{}
@@ -205,58 +138,41 @@ func distributor(p Params, c distributorChannels) {
 		reportState(&turn, &world, c.events, finished)
 		defer wg.Done()
 	}()
-
 	// execute all turns of the Game of Life.
 	for h := 0; h < p.Turns; h++ {
-		var newWorld [][]byte
-		var flipped []util.Cell
-		var startY = 0
 
-		//Make return channels for workers
-		worldChans := make([]chan [][]uint8, p.Threads)
-		for i := 0; i < p.Threads; i++ {
-			worldChans[i] = make(chan [][]uint8)
-		}
-		flippedChans := make([]chan []util.Cell, p.Threads)
-		for i := 0; i < p.Threads; i++ {
-			flippedChans[i] = make(chan []util.Cell)
+		flipped := new(stubs.Update)
+		err := client.Call(stubs.NextState, status, &flipped)
+		if err != nil {
+			fmt.Println("Error: ", err)
+			break
 		}
 
-		//Dispatch workers
-		incrementY := p.ImageHeight / p.Threads
-		for i := 0; i < p.Threads; i++ {
-			if i == p.Threads-1 {
-				go simulateTurn(world, startY, p.ImageHeight, p, worldChans[i], flippedChans[i])
-			} else {
-				go simulateTurn(world, startY, (p.ImageHeight/p.Threads)+startY, p, worldChans[i], flippedChans[i])
-			}
-			startY += incrementY
-		}
-
-		//Receive data from workers
-		for i := 0; i < p.Threads; i++ {
-			worldData := <-worldChans[i]
-			newWorld = append(newWorld, worldData...)
-			flippedData := <-flippedChans[i]
-			flipped = append(flipped, flippedData...)
-		}
-
-		world = newWorld
 		turn++
-		c.events <- CellsFlipped{turn, flipped}
+		c.events <- CellsFlipped{turn, flipped.Flipped}
 		c.events <- StateChange{turn, Executing}
+	}
+
+	output := new(stubs.Output)
+	err = client.Call(stubs.Finish, status, &output)
+	if err != nil {
+		fmt.Println("Error: ", err)
+	}
+	err = client.Close()
+	if err != nil {
+		fmt.Println("Error: ", err)
 	}
 
 	c.ioCommand <- ioOutput
 	c.ioFilename <- getOutputFilename(p)
-	writeToOutput(world, p.Turns, p, c.events, c.ioOutput)
+	writeToOutput(output.World, p.Turns, p, c.events, c.ioOutput)
 
 	// Make sure that the Io has finished any output before exiting.
 	c.ioCommand <- ioCheckIdle
 	<-c.ioIdle
 
 	c.events <- StateChange{p.Turns, Quitting}
-	aliveCells := getAliveCells(world)
+	aliveCells := getAliveCells(output.World)
 	c.events <- FinalTurnComplete{p.Turns, aliveCells}
 
 	// close alive cells reporting
