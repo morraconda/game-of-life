@@ -10,6 +10,7 @@ import (
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
+var workerCount int
 var height int
 var width int
 var threads int
@@ -109,6 +110,10 @@ func (b *Broker) NextState(req stubs.StatusReport, res *stubs.Update) (err error
 }
 
 func (b *Broker) Start(input stubs.Input, res *stubs.StatusReport) (err error) {
+	if !(workerCount >= input.Threads) {
+		fmt.Println("Error: not enough workers for thread count")
+		return fmt.Errorf("not enough workers")
+	}
 	height = input.Height
 	width = input.Width
 	world = input.World
@@ -130,6 +135,7 @@ func (b *Broker) Finish(req stubs.StatusReport, res *stubs.Output) (err error) {
 }
 
 func (b *Broker) Subscribe(req stubs.Subscription, res *stubs.StatusReport) (err error) {
+	workerCount += 1
 	fmt.Println("Subscription request from", req.FactoryAddress)
 	subscribe(req)
 	return
