@@ -181,13 +181,11 @@ func distributor(p Params, c distributorChannels) {
 		reportState(&turn, &world, c.events, finished)
 		defer wg.Done()
 	}()
-	exit := false
 	// execute all turns of the Game of Life.
 	for h := 0; h < p.Turns; h++ {
 		pause.Wait()
 		select {
 		case <-quit:
-			exit = true
 			break
 		default:
 			flipped := new(stubs.Update)
@@ -201,18 +199,16 @@ func distributor(p Params, c distributorChannels) {
 		}
 	}
 	finished <- true
-	if !exit {
-		output := new(stubs.Output)
-		err = client.Call(stubs.Finish, status, &output)
-		if err != nil {
-			fmt.Println("Error: ", err)
-		}
-		c.ioCommand <- ioOutput
-		c.ioFilename <- getOutputFilename(p)
-		writeToOutput(output.World, p.Turns, p, c.events, c.ioOutput)
-		aliveCells := getAliveCells(output.World)
-		c.events <- FinalTurnComplete{p.Turns, aliveCells}
+	output := new(stubs.Output)
+	err = client.Call(stubs.Finish, status, &output)
+	if err != nil {
+		fmt.Println("Error: ", err)
 	}
+	c.ioCommand <- ioOutput
+	c.ioFilename <- getOutputFilename(p)
+	writeToOutput(output.World, p.Turns, p, c.events, c.ioOutput)
+	aliveCells := getAliveCells(output.World)
+
 	err = client.Close()
 	if err != nil {
 		fmt.Println("Error: ", err)
@@ -223,6 +219,7 @@ func distributor(p Params, c distributorChannels) {
 	<-c.ioIdle
 	// close alive cells reporting
 	c.events <- StateChange{p.Turns, Quitting}
+	c.events <- FinalTurnComplete{p.Turns, aliveCells}
 
 	finished <- true
 	window.Destroy()
