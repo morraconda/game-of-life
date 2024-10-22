@@ -113,7 +113,9 @@ func (b *Broker) NextState(req stubs.StatusReport, res *stubs.Update) (err error
 	publish()
 	// Wait until all jobs have been processed
 	wg.Wait()
+	worldMX.Lock()
 	deepCopy(&world, &newWorld)
+	worldMX.Unlock()
 	res.Flipped = flipped
 	flipped = nil
 	return
@@ -140,11 +142,13 @@ func (b *Broker) Start(input stubs.Input, res *stubs.StatusReport) (err error) {
 
 // Finish Called by distributor to return final world
 func (b *Broker) Finish(req stubs.StatusReport, res *stubs.Output) (err error) {
+	worldMX.Lock()
 	res.World = make([][]byte, len(world))
 	for i := range res.World {
 		res.World[i] = make([]byte, len(world[i])) // Make sure each row has the correct width
 	}
 	deepCopy(&res.World, &world)
+	worldMX.Unlock()
 	return
 }
 
@@ -160,6 +164,7 @@ func (b *Broker) Subscribe(req stubs.Subscription, res *stubs.StatusReport) (err
 }
 
 func main() {
+	// TODO: Make this dynamic in case the address is not available
 	pAddr = flag.String("port", "8030", "Port to listen on")
 	flag.Parse()
 	err := rpc.Register(&Broker{})
