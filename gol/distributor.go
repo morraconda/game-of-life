@@ -61,7 +61,6 @@ func writeToOutput(world [][]byte, turn int, p Params,
 			outputChan <- world[i][j]
 		}
 	}
-	//eventChan <- ImageOutputComplete{turn, getOutputFilename(p, turn)}
 }
 
 // get list of alive cells from a world
@@ -110,7 +109,9 @@ func saveOutput(client *rpc.Client, turn int, p Params, c distributorChannels) (
 	return output.World
 }
 
-//TODO: get s, q, k working
+//TODO: fix bug "ERROR: Your program has not returned from the gol.Run function
+//        Continuing with other tests, leaving your program executing
+//        You may get unexpected behaviour"
 func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte, finished <-chan bool,
 	quit chan<- bool, pause chan<- bool, p Params, c distributorChannels, client *rpc.Client) {
 	paused := false
@@ -137,7 +138,6 @@ func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte, finished
 				c.events <- StateChange{*turn, Quitting}
 				quit <- true
 				pause <- false
-				//return
 			case sdl.K_k: // shutdown
 				// TODO: shut down broker
 				if !paused {
@@ -148,7 +148,6 @@ func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte, finished
 				c.events <- StateChange{*turn, Quitting}
 				quit <- true
 				pause <- false
-				//return
 			case sdl.K_p: // pause
 				if paused {
 					paused = false
@@ -208,18 +207,15 @@ mainLoop:
 			exit = true
 			break mainLoop
 		default:
-			fmt.Println("turn\n")
 			flipped := new(stubs.Update)
 			err := client.Call(stubs.NextState, status, &flipped)
 			if err != nil {
 				panic(err)
 			}
-
 			c.events <- CellsFlipped{turn, flipped.Flipped}
 			turn++
 		}
 	}
-	fmt.Println("exit loop\n")
 	finishedR <- true
 	finishedL <- true
 	if !exit {
@@ -233,9 +229,7 @@ mainLoop:
 	if err != nil {
 		fmt.Println("Error: ", err)
 	}
-	fmt.Println("Waiting")
 	wg.Wait()
-	fmt.Println("Wait over")
 	// Make sure that the Io has finished any output before exiting.
 	c.ioCommand <- ioCheckIdle
 	<-c.ioIdle
