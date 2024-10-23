@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/rpc"
+	"os"
 	"os/exec"
 	"strconv"
 	"sync"
@@ -14,6 +15,7 @@ import (
 
 // Public variables
 var workerCount int
+var workerAddresses []*exec.Cmd
 var height int
 var width int
 var threads int
@@ -48,6 +50,7 @@ func spawnWorkers() {
 
 	// Start a worker at this address
 	cmd := exec.Command("go", "run", "../server/server.go", "-ip=127.0.0.1:"+strconv.Itoa(port), "-broker=127.0.0.1:"+*pAddr)
+	workerAddresses = append(workerAddresses, cmd)
 	err = cmd.Start()
 	workerCount += 1
 	if err != nil {
@@ -139,6 +142,17 @@ func (b *Broker) Start(input stubs.Input, res *stubs.StatusReport) (err error) {
 			spawnWorkers()
 		}
 	}
+	return
+}
+
+func (b *Broker) Close(req stubs.StatusReport, res *stubs.StatusReport) (err error) {
+	for _, worker := range workerAddresses {
+		err := worker.Process.Kill()
+		if err != nil {
+			fmt.Println("Error: ", err)
+		}
+	}
+	os.Exit(0)
 	return
 }
 

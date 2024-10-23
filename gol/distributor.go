@@ -139,11 +139,15 @@ func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte, finished
 				quit <- true
 				pause <- false
 			case sdl.K_k: // shutdown
-				// TODO: shut down broker
 				if !paused {
 					pause <- true
 				}
 				saveOutput(client, *turn, p, c)
+				status := new(stubs.StatusReport)
+				err := client.Call(stubs.Close, status, &status)
+				if err != nil {
+					fmt.Println("Error: ", err)
+				}
 				c.events <- FinalTurnComplete{*turn, getAliveCells(*world)}
 				c.events <- StateChange{*turn, Quitting}
 				quit <- true
@@ -201,12 +205,18 @@ mainLoop:
 		select {
 		case paused := <-pause:
 			for paused {
-				paused = <-pause
+				select {
+				case <-quit:
+					exit = true
+					break mainLoop
+				case paused = <-pause:
+				}
 			}
 		case <-quit:
 			exit = true
 			break mainLoop
 		default:
+			fmt.Println("LOOP")
 			flipped := new(stubs.Update)
 			err := client.Call(stubs.NextState, status, &flipped)
 			if err != nil {
@@ -218,6 +228,7 @@ mainLoop:
 	}
 	finishedR <- true
 	finishedL <- true
+	fmt.Println("AH\n")
 	if !exit {
 		world := saveOutput(client, turn, p, c)
 		aliveCells := getAliveCells(world)

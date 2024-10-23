@@ -2,11 +2,11 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"log"
 	"net"
 	"net/rpc"
 	"os"
+	"sync"
 	"uk.ac.bris.cs/gameoflife/gol/stubs"
 	"uk.ac.bris.cs/gameoflife/util"
 )
@@ -97,11 +97,6 @@ func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) (err erro
 	return
 }
 
-func (s *Compute) Close(req stubs.StatusReport, res *stubs.StatusReport) (err error) {
-	stopchan <- true
-	return
-}
-
 func main() {
 	f, err := os.OpenFile("testlogfile", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
@@ -134,9 +129,7 @@ func main() {
 	}
 	subscription := stubs.Subscription{FactoryAddress: *pAddr, Callback: "Compute.SimulateTurn"}
 	err = server.Call(stubs.Subscribe, subscription, 'a')
-	select {
-	case <-stopchan:
-		fmt.Println("Worker at", *pAddr, "is shutting down.")
-		return
-	}
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	wg.Wait()
 }
