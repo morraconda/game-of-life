@@ -54,8 +54,7 @@ func getInitialWorld(input <-chan byte, p Params) [][]byte {
 }
 
 // writes board state to output
-func writeToOutput(world [][]byte, turn int, p Params,
-	eventChan chan<- Event, outputChan chan<- byte) {
+func writeToOutput(world [][]byte, turn int, p Params, outputChan chan<- byte) {
 	for i := 0; i < p.ImageHeight; i++ {
 		for j := 0; j < p.ImageWidth; j++ {
 			outputChan <- world[i][j]
@@ -77,10 +76,11 @@ func getAliveCells(world [][]byte) []util.Cell {
 }
 
 // reports state every 2 seconds
-func reportState(turn *int, world *[][]byte, c chan<- Event, finished <-chan bool) {
+func reportState(turn *int, world *[][]byte, c chan<- Event, finished <-chan bool, wg *sync.WaitGroup) {
 	for {
 		select {
 		case <-finished:
+			wg.Done()
 			return
 		case <-time.After(2 * time.Second):
 			alive := getAliveCells(*world)
@@ -100,7 +100,7 @@ func saveOutput(client *rpc.Client, turn int, p Params, c distributorChannels) (
 	// write to output
 	c.ioCommand <- ioOutput
 	c.ioFilename <- getOutputFilename(p, turn)
-	writeToOutput(output.World, turn, p, c.events, c.ioOutput)
+	writeToOutput(output.World, turn, p, c.ioOutput)
 	// close io
 	c.ioCommand <- ioCheckIdle
 	<-c.ioIdle
@@ -109,15 +109,14 @@ func saveOutput(client *rpc.Client, turn int, p Params, c distributorChannels) (
 	return output.World
 }
 
-//TODO: fix bug "ERROR: Your program has not returned from the gol.Run function
-//        Continuing with other tests, leaving your program executing
-//        You may get unexpected behaviour"
+//TODO: fix this so it passes all tests"
 func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte, finished <-chan bool,
-	quit chan<- bool, pause chan<- bool, p Params, c distributorChannels, client *rpc.Client) {
+	quit chan<- bool, pause chan<- bool, p Params, c distributorChannels, client *rpc.Client, wg *sync.WaitGroup) {
 	paused := false
 	for {
 		select {
-		case <-finished:
+		case <-finished: // stop handling
+			wg.Done()
 			return
 		case key := <-keypresses:
 			switch key {
@@ -143,6 +142,7 @@ func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte, finished
 					pause <- true
 				}
 				saveOutput(client, *turn, p, c)
+				// Call broker to shut itself down
 				status := new(stubs.StatusReport)
 				err := client.Call(stubs.Close, status, &status)
 				if err != nil {
@@ -171,52 +171,49 @@ func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte, finished
 
 // distributor executes all turns, sends work to broker
 func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
+	// Dial broker
 	client, _ := rpc.Dial("tcp", "127.0.0.1:8030")
-	// init crap
+	// Get initial world
 	c.ioCommand <- ioInput
 	c.ioFilename <- getInputFilename(p)
 	world := getInitialWorld(c.ioInput, p)
+	// Pack initial world to be sent to broker
 	status := new(stubs.StatusReport)
 	input := new(stubs.Input)
 	input.World = world
 	input.Width = p.ImageWidth
 	input.Height = p.ImageHeight
 	input.Threads = p.Threads
+	// Send initial world to broker
 	err := client.Call(stubs.Start, input, &status)
-	turn := 0
+	// Channels for communicating with ticker and keypress handler
 	wg := sync.WaitGroup{}
-	wg.Add(1)
+	wg.Add(2)
 	quit := make(chan bool)
 	finishedR := make(chan bool)
 	finishedL := make(chan bool)
 	pause := make(chan bool)
-	// start alive cells ticker and keypress handler
-	go func() {
-		go handleKeypress(keypresses, &turn, &world, finishedL, quit, pause, p, c, client)
-		go reportState(&turn, &world, c.events, finishedR)
-		wg.Done()
-	}()
-	// execute all turns of the Game of Life.
+	turn := 0
+	// Start alive cells ticker and keypress handler
+	go handleKeypress(keypresses, &turn, &world, finishedL, quit, pause, p, c, client, &wg)
+	go reportState(&turn, &world, c.events, finishedR, &wg)
 	exit := false
 	c.events <- StateChange{turn, Executing}
-
+	// Main game loop
 mainLoop:
 	for turn < p.Turns {
 		select {
 		case paused := <-pause:
+			// Halt loop and wait until pause is set to false
 			for paused {
-				select {
-				case <-quit:
-					exit = true
-					break mainLoop
-				case paused = <-pause:
-				}
+				paused = <-pause
 			}
 		case <-quit:
+			// Exit
 			exit = true
 			break mainLoop
 		default:
-			fmt.Println("LOOP")
+			// Call broker to advance to next state
 			flipped := new(stubs.Update)
 			err := client.Call(stubs.NextState, status, &flipped)
 			if err != nil {
@@ -226,9 +223,10 @@ mainLoop:
 			turn++
 		}
 	}
+	// Signal goroutines to return
 	finishedR <- true
 	finishedL <- true
-	fmt.Println("AH\n")
+	// If we finished the turns output the result
 	if !exit {
 		world := saveOutput(client, turn, p, c)
 		aliveCells := getAliveCells(world)
@@ -236,10 +234,13 @@ mainLoop:
 		c.events <- StateChange{turn, Quitting}
 	}
 
+	// Close client
 	err = client.Close()
 	if err != nil {
 		fmt.Println("Error: ", err)
 	}
+
+	// Wait for goroutines to confirm closure
 	wg.Wait()
 	// Make sure that the Io has finished any output before exiting.
 	c.ioCommand <- ioCheckIdle
