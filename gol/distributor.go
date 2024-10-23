@@ -78,11 +78,10 @@ func getAliveCells(world [][]byte) []util.Cell {
 }
 
 // reports state every 2 seconds
-func reportState(turn *int, world *[][]byte, c chan<- Event, finished <-chan bool, wg *sync.WaitGroup) {
+func reportState(turn *int, world *[][]byte, c chan<- Event, finished <-chan bool) {
 	for {
 		select {
 		case <-finished:
-			wg.Done()
 			return
 		case <-time.After(2 * time.Second):
 			alive := getAliveCells(*world)
@@ -113,7 +112,7 @@ func saveOutput(client *rpc.Client, turn int, p Params, c distributorChannels) (
 
 //TODO: get s, q, k working
 func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte, finished <-chan bool,
-	quit chan<- bool, pause *sync.WaitGroup, p Params, c distributorChannels, client *rpc.Client) {
+	quit chan<- bool, pause chan<- bool, p Params, c distributorChannels, client *rpc.Client) {
 	paused := false
 	for {
 		select {
@@ -122,39 +121,45 @@ func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte, finished
 		case key := <-keypresses:
 			switch key {
 			case sdl.K_s: // save
+				if !paused {
+					pause <- true
+				}
 				saveOutput(client, *turn, p, c)
+				if !paused {
+					pause <- false
+				}
 			case sdl.K_q: // quit
+				if !paused {
+					pause <- true
+				}
 				world := saveOutput(client, *turn, p, c)
 				c.events <- FinalTurnComplete{*turn, getAliveCells(world)}
 				c.events <- StateChange{*turn, Quitting}
-				if paused {
-					pause.Done()
-				}
 				quit <- true
-				return
-
+				pause <- false
+				//return
 			case sdl.K_k: // shutdown
 				// TODO: shut down broker
+				if !paused {
+					pause <- true
+				}
 				saveOutput(client, *turn, p, c)
 				c.events <- FinalTurnComplete{*turn, getAliveCells(*world)}
 				c.events <- StateChange{*turn, Quitting}
-				if paused {
-					pause.Done()
-				}
 				quit <- true
-				return
+				pause <- false
+				//return
 			case sdl.K_p: // pause
 				if paused {
-					pause.Done()
+					paused = false
 					fmt.Println("continuing")
 					c.events <- StateChange{*turn, Executing}
-					paused = false
-
+					pause <- false
 				} else {
-					pause.Add(1)
+					paused = true
 					fmt.Println(*turn)
 					c.events <- StateChange{*turn, Paused}
-					paused = true
+					pause <- true
 				}
 			}
 		}
@@ -179,21 +184,31 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 	quit := make(chan bool)
-	finished := make(chan bool)
-	pause := sync.WaitGroup{}
+	finishedR := make(chan bool)
+	finishedL := make(chan bool)
+	pause := make(chan bool)
 	// start alive cells ticker and keypress handler
-	go handleKeypress(keypresses, &turn, &world, finished, quit, &pause, p, c, client)
-	go reportState(&turn, &world, c.events, finished, &wg)
+	go func() {
+		go handleKeypress(keypresses, &turn, &world, finishedL, quit, pause, p, c, client)
+		go reportState(&turn, &world, c.events, finishedR)
+		wg.Done()
+	}()
 	// execute all turns of the Game of Life.
 	exit := false
 	c.events <- StateChange{turn, Executing}
-	for h := 0; h < p.Turns; h++ {
-		pause.Wait()
+
+mainLoop:
+	for turn < p.Turns {
 		select {
+		case paused := <-pause:
+			for paused {
+				paused = <-pause
+			}
 		case <-quit:
 			exit = true
-			break
+			break mainLoop
 		default:
+			fmt.Println("turn\n")
 			flipped := new(stubs.Update)
 			err := client.Call(stubs.NextState, status, &flipped)
 			if err != nil {
@@ -204,7 +219,9 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 			turn++
 		}
 	}
-	finished <- true
+	fmt.Println("exit loop\n")
+	finishedR <- true
+	finishedL <- true
 	if !exit {
 		world := saveOutput(client, turn, p, c)
 		aliveCells := getAliveCells(world)
@@ -216,14 +233,17 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	if err != nil {
 		fmt.Println("Error: ", err)
 	}
-	finished <- true
+	fmt.Println("Waiting")
 	wg.Wait()
+	fmt.Println("Wait over")
 	// Make sure that the Io has finished any output before exiting.
 	c.ioCommand <- ioCheckIdle
 	<-c.ioIdle
 	// Close the channel to stop the SDL goroutine gracefully. Removing may cause deadlock.
-	close(finished)
+	close(finishedR)
+	close(finishedL)
+	close(pause)
 	close(quit)
 	close(c.events)
-
+	return
 }

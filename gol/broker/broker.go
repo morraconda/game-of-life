@@ -114,7 +114,9 @@ func (b *Broker) NextState(req stubs.StatusReport, res *stubs.Update) (err error
 	// Wait until all jobs have been processed
 	wg.Wait()
 	worldMX.Lock()
+	newWorldMX.Lock()
 	deepCopy(&world, &newWorld)
+	newWorldMX.Unlock()
 	worldMX.Unlock()
 	res.Flipped = flipped
 	flipped = nil
@@ -145,7 +147,7 @@ func (b *Broker) Finish(req stubs.StatusReport, res *stubs.Output) (err error) {
 	worldMX.Lock()
 	res.World = make([][]byte, len(world))
 	for i := range res.World {
-		res.World[i] = make([]byte, len(world[i])) // Make sure each row has the correct width
+		res.World[i] = make([]byte, len(world[i]))
 	}
 	deepCopy(&res.World, &world)
 	worldMX.Unlock()
