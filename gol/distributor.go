@@ -98,6 +98,8 @@ func saveOutput(client *rpc.Client, turn int, p Params, c distributorChannels) (
 		fmt.Println("Error: ", err)
 	}
 	// write to output
+	c.ioCommand <- ioCheckIdle
+	<-c.ioIdle
 	c.ioCommand <- ioOutput
 	c.ioFilename <- getOutputFilename(p, turn)
 	writeToOutput(output.World, turn, p, c.ioOutput)
@@ -189,7 +191,7 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	// Channels for communicating with ticker and keypress handler
 	wg := sync.WaitGroup{}
 	wg.Add(2)
-	quit := make(chan bool)
+	quit := make(chan bool, 1)
 	finishedR := make(chan bool)
 	finishedL := make(chan bool)
 	pause := make(chan bool)
