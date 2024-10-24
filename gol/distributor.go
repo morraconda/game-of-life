@@ -200,6 +200,7 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	go handleKeypress(keypresses, &turn, &world, finishedL, quit, pause, p, c, client, &wg)
 	go reportState(&turn, &world, c.events, finishedR, &wg)
 	exit := false
+	c.events <- CellsFlipped{turn, make([]util.Cell, 0)}
 	c.events <- StateChange{turn, Executing}
 	// Main game loop
 mainLoop:
@@ -222,6 +223,7 @@ mainLoop:
 				panic(err)
 			}
 			c.events <- CellsFlipped{turn, flipped.Flipped}
+			c.events <- TurnComplete{turn}
 			turn++
 		}
 	}

@@ -82,7 +82,7 @@ func publish() {
 }
 
 // Routine ran once per server instance, takes jobs from the queue and sends them to the server
-func subscriberLoop(client *rpc.Client, callback string, id int) {
+func subscriberLoop(client *rpc.Client, callback string) {
 	for {
 		//Take a job from the job queue
 		job := <-jobs
@@ -99,10 +99,10 @@ func subscriberLoop(client *rpc.Client, callback string, id int) {
 			newWorldMX.Lock()
 			flippedMX.Lock()
 			newWorld[job.StartY+i] = response.World[i]
-			flipped = append(flipped, response.Flipped...)
 			flippedMX.Unlock()
 			newWorldMX.Unlock()
 		}
+		flipped = append(flipped, response.Flipped...)
 		wgMX.Lock()
 		wg.Done()
 		wgMX.Unlock()
@@ -172,7 +172,7 @@ func (b *Broker) Finish(req stubs.StatusReport, res *stubs.Output) (err error) {
 func (b *Broker) Subscribe(req stubs.Subscription, res *stubs.StatusReport) (err error) {
 	client, err := rpc.Dial("tcp", req.FactoryAddress)
 	if err == nil {
-		go subscriberLoop(client, req.Callback, workerCount)
+		go subscriberLoop(client, req.Callback)
 	} else {
 		fmt.Println("Error subscribing: ", err)
 	}
