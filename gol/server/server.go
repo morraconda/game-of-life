@@ -103,10 +103,12 @@ func main() {
 		log.Fatalf("error opening log: %v", err)
 	}
 	log.SetOutput(f)
+
 	pAddr := flag.String("ip", "127.0.0.1:8050", "IP and port to listen on")
 	brokerAddr := flag.String("broker", "127.0.0.1:8030", "Address of broker instance")
 	flag.Parse()
 	log.Printf("Worker started at: %s", *pAddr)
+
 	err = rpc.Register(&Compute{})
 	if err != nil {
 		log.Fatalf("Failed to register Compute service: %v", err)
@@ -122,13 +124,18 @@ func main() {
 		rpc.Accept(listener)
 	}()
 
-	//Subscribe to jobs
+	//Dial the broker
 	server, err := rpc.Dial("tcp", *brokerAddr)
 	if err != nil {
 		log.Fatalf("Failed to connect to broker: %v", err)
 	}
+
+	//subscribe to jobs
 	subscription := stubs.Subscription{FactoryAddress: *pAddr, Callback: "Compute.SimulateTurn"}
 	err = server.Call(stubs.Subscribe, subscription, 'a')
+	if err != nil {
+		log.Fatalf("Failed to subscribe: %v", err)
+	}
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 	wg.Wait()

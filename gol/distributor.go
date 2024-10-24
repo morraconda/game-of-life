@@ -199,7 +199,10 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	go handleKeypress(keypresses, &turn, &world, finishedL, quit, pause, p, c, client, &wg)
 	go reportState(&turn, &world, c.events, finishedR, &wg)
 	exit := false
-	c.events <- CellsFlipped{turn, make([]util.Cell, 0)}
+
+	//get the initial alive cells and use them as input to CellsFlipped
+	initialFlippedCells := getAliveCells(world)
+	c.events <- CellsFlipped{turn, initialFlippedCells}
 	c.events <- StateChange{turn, Executing}
 	// Main game loop
 mainLoop:
@@ -221,10 +224,13 @@ mainLoop:
 			if err != nil {
 				panic(err)
 			}
+
 			// TODO: get visualisation tests to pass
+
 			c.events <- CellsFlipped{turn, flipped.Flipped}
 			c.events <- TurnComplete{turn}
 			turn++
+
 		}
 	}
 	// Signal goroutines to return
