@@ -102,7 +102,9 @@ func subscriberLoop(client *rpc.Client, callback string) {
 			flippedMX.Unlock()
 			newWorldMX.Unlock()
 		}
-		flipped = append(flipped, response.Flipped...)
+		for i := 0; i < len(response.Flipped); i++ {
+			flipped = append(flipped, response.Flipped[i])
+		}
 		wgMX.Lock()
 		wg.Done()
 		wgMX.Unlock()

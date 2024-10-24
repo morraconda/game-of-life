@@ -111,7 +111,6 @@ func saveOutput(client *rpc.Client, turn int, p Params, c distributorChannels) (
 	return output.World
 }
 
-//TODO: fix this so it passes all tests"
 func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte, finished <-chan bool,
 	quit chan<- bool, pause chan<- bool, p Params, c distributorChannels, client *rpc.Client, wg *sync.WaitGroup) {
 	paused := false
@@ -222,6 +221,7 @@ mainLoop:
 			if err != nil {
 				panic(err)
 			}
+			// TODO: get visualisation tests to pass
 			c.events <- CellsFlipped{turn, flipped.Flipped}
 			c.events <- TurnComplete{turn}
 			turn++
