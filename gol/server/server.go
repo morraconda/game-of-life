@@ -133,9 +133,6 @@ func main() {
 	//subscribe to jobs
 	subscription := stubs.Subscription{FactoryAddress: *pAddr, Callback: "Compute.SimulateTurn"}
 	err = server.Call(stubs.Subscribe, subscription, 'a')
-	//if err != nil {
-	//	log.Fatalf("Failed to subscribe: %v", err)
-	//}
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 	wg.Wait()
