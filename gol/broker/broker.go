@@ -192,7 +192,7 @@ func main() {
 	listener, err := net.Listen("tcp", ":"+*pAddr)
 	if err != nil {
 		fmt.Printf("Error connecting to server port %s", *pAddr)
-		listener, err = net.Listen("tcp", ":0") //:0 binds to a random port
+		listener, err = net.Listen("tcp", ":0") //:0 binds to a random available server port
 		if err != nil {
 			fmt.Printf("Error: no ports available")
 		}
