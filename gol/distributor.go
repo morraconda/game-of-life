@@ -217,6 +217,7 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	//get the initial alive cells and use them as input to CellsFlipped
 	initialFlippedCells := getAliveCells(world)
 	c.events <- CellsFlipped{turn, initialFlippedCells}
+	c.events <- StateChange{0, Executing}
 	// Main game loop
 mainLoop:
 	for turn < p.Turns {
@@ -240,7 +241,6 @@ mainLoop:
 				panic(err)
 			}
 
-			// TODO: get all visualisation tests to pass
 			// TODO: move this into helper function and remove flipped cell computation from broker?
 			var f []util.Cell
 			for i := 0; i < len(world); i++ {
