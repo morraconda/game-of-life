@@ -94,16 +94,19 @@ func subscriberLoop(client *rpc.Client, callback string) {
 			panic(err)
 		}
 		//Append the results to the new state
+		newWorldMX.Lock()
 		for i := 0; i < len(response.World); i++ {
-			newWorldMX.Lock()
+
 			newWorld[job.StartY+i] = response.World[i]
-			newWorldMX.Unlock()
+
 		}
+		newWorldMX.Unlock()
+		flippedMX.Lock()
 		for i := 0; i < len(response.Flipped); i++ {
-			flippedMX.Lock()
+
 			flipped = append(flipped, response.Flipped[i])
-			flippedMX.Unlock()
 		}
+		flippedMX.Unlock()
 		wgMX.Lock()
 		wg.Done()
 		wgMX.Unlock()
@@ -184,7 +187,6 @@ func (b *Broker) Subscribe(req stubs.Subscription, res *stubs.StatusReport) (err
 }
 
 func main() {
-	// TODO: Make this dynamic in case the address is not available
 	pAddr = flag.String("port", "8030", "Port to listen on")
 	flag.Parse()
 	err := rpc.Register(&Broker{})

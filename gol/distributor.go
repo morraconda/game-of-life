@@ -65,7 +65,6 @@ func writeToOutput(world [][]byte, turn int, p Params, outputChan chan<- byte) {
 }
 
 // get list of alive cells from a world
-// TODO: Fix go test -v -run TestAlive
 func getAliveCells(world [][]byte) []util.Cell {
 	var alive []util.Cell
 	for i := 0; i < len(world); i++ {
@@ -235,16 +234,29 @@ mainLoop:
 			// Call broker to advance to next state
 			superMX.Lock()
 			update := new(stubs.Update)
+			// f := update.Flipped
 			err := client.Call(stubs.NextState, status, &update)
 			if err != nil {
 				panic(err)
 			}
-			world = update.World
-			// TODO: get visualisation tests to pass
-			c.events <- CellsFlipped{turn, update.Flipped}
-			c.events <- TurnComplete{turn}
 
+			// TODO: get all visualisation tests to pass
+			// TODO: move this into helper function and remove flipped cell computation from broker?
+			var f []util.Cell
+			for i := 0; i < len(world); i++ {
+				for j := 0; j < len(world[i]); j++ {
+					if world[i][j] != update.World[i][j] {
+						f = append(f, util.Cell{j, i})
+					}
+				}
+			}
+
+			world = update.World
+
+			c.events <- CellsFlipped{turn, f}
+			c.events <- TurnComplete{turn}
 			turn++
+
 			superMX.Unlock()
 
 		}
