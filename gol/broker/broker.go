@@ -38,7 +38,7 @@ func deepCopy(output *[][]byte, original *[][]byte) {
 	}
 }
 
-// Spawn a new worker, this worker will dial iteself into the broker
+// Spawn a new worker, this worker will dial itself into the broker
 func spawnWorkers() {
 	// Allocate a random free address
 	listener, err := net.Listen("tcp", ":0")
@@ -61,7 +61,9 @@ func spawnWorkers() {
 // Receive a board and slice it up into jobs
 func publish() {
 	splitRequest := new(stubs.Request)
+	worldMX.Lock()
 	splitRequest.World, splitRequest.Width, splitRequest.Height = world, width, height
+	worldMX.Unlock()
 	incrementY := height / threads
 	startY := 0
 	for i := 0; i < threads; i++ {
@@ -89,21 +91,18 @@ func subscriberLoop(client *rpc.Client, callback string) {
 		response := new(stubs.Response) // Empty response
 		err := client.Call(callback, job, response)
 		if err != nil {
-			fmt.Println("Error calling: ", err)
-			jobsMX.Lock()
-			jobs <- job
-			jobsMX.Unlock()
+			panic(err)
 		}
 		//Append the results to the new state
 		for i := 0; i < len(response.World); i++ {
 			newWorldMX.Lock()
-			flippedMX.Lock()
 			newWorld[job.StartY+i] = response.World[i]
-			flippedMX.Unlock()
 			newWorldMX.Unlock()
 		}
 		for i := 0; i < len(response.Flipped); i++ {
+			flippedMX.Lock()
 			flipped = append(flipped, response.Flipped[i])
+			flippedMX.Unlock()
 		}
 		wgMX.Lock()
 		wg.Done()
@@ -120,11 +119,13 @@ func (b *Broker) NextState(req stubs.StatusReport, res *stubs.Update) (err error
 	wg.Wait()
 	worldMX.Lock()
 	newWorldMX.Lock()
+	flippedMX.Lock()
 	deepCopy(&world, &newWorld)
-	newWorldMX.Unlock()
-	worldMX.Unlock()
 	res.Flipped = flipped
 	flipped = nil
+	flippedMX.Unlock()
+	newWorldMX.Unlock()
+	worldMX.Unlock()
 	return
 }
 

@@ -12,13 +12,12 @@ import (
 )
 
 var listener net.Listener
-var stopchan chan bool
 
 // returns in-bounds version of a cell if out of bounds
 func wrap(cell util.Cell, width int, height int) util.Cell {
 	if cell.X == -1 {
 		cell.X = width - 1
-	} else if cell.X == height {
+	} else if cell.X == width {
 		cell.X = 0
 	}
 
