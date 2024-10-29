@@ -17,9 +17,9 @@ type Input struct {
 	Threads int
 }
 
-type Output struct {
-	World [][]byte
-}
+//type Output struct {
+//	World [][]byte
+//}
 
 type Request struct {
 	World  [][]byte
@@ -36,6 +36,7 @@ type Response struct {
 
 type Update struct {
 	Flipped []util.Cell
+	World   [][]byte
 }
 
 type Subscription struct {

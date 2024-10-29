@@ -121,6 +121,7 @@ func (b *Broker) NextState(req stubs.StatusReport, res *stubs.Update) (err error
 	newWorldMX.Lock()
 	flippedMX.Lock()
 	deepCopy(&world, &newWorld)
+	res.World = newWorld
 	res.Flipped = flipped
 	flipped = nil
 	flippedMX.Unlock()
@@ -160,7 +161,7 @@ func (b *Broker) Close(req stubs.StatusReport, res *stubs.StatusReport) (err err
 }
 
 // Finish Called by distributor to return final world
-func (b *Broker) Finish(req stubs.StatusReport, res *stubs.Output) (err error) {
+func (b *Broker) Finish(req stubs.StatusReport, res *stubs.Update) (err error) {
 	worldMX.Lock()
 	res.World = make([][]byte, len(world))
 	for i := range res.World {

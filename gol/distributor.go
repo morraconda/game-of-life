@@ -10,6 +10,8 @@ import (
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
+var superMX sync.RWMutex
+
 type distributorChannels struct {
 	events     chan<- Event
 	ioCommand  chan<- ioCommand
@@ -84,14 +86,16 @@ func reportState(turn *int, world *[][]byte, c chan<- Event, finished <-chan boo
 			wg.Done()
 			return
 		case <-time.After(2 * time.Second):
+			superMX.Lock()
 			alive := getAliveCells(*world)
 			c <- Event(AliveCellsCount{*turn, len(alive)})
+			superMX.Unlock()
 		}
 	}
 }
 
 func saveOutput(client *rpc.Client, turn int, p Params, c distributorChannels) (world [][]byte) {
-	output := new(stubs.Output)
+	output := new(stubs.Update)
 	status := new(stubs.StatusReport)
 	// get most recent output from broker
 	err := client.Call(stubs.Finish, status, &output)
@@ -126,7 +130,9 @@ func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte, finished
 				if !paused {
 					pause <- true
 				}
+				superMX.Lock()
 				saveOutput(client, *turn, p, c)
+				superMX.Unlock()
 				if !paused {
 					pause <- false
 				}
@@ -134,15 +140,18 @@ func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte, finished
 				if !paused {
 					pause <- true
 				}
+				superMX.Lock()
 				world := saveOutput(client, *turn, p, c)
 				c.events <- FinalTurnComplete{*turn, getAliveCells(world)}
 				c.events <- StateChange{*turn, Quitting}
+				superMX.Unlock()
 				quit <- true
 				pause <- false
 			case sdl.K_k: // shutdown
 				if !paused {
 					pause <- true
 				}
+				superMX.Lock()
 				saveOutput(client, *turn, p, c)
 				// Call broker to shut itself down
 				status := new(stubs.StatusReport)
@@ -152,18 +161,23 @@ func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte, finished
 				}
 				c.events <- FinalTurnComplete{*turn, getAliveCells(*world)}
 				c.events <- StateChange{*turn, Quitting}
+				superMX.Unlock()
 				quit <- true
 				pause <- false
 			case sdl.K_p: // pause
 				if paused {
 					paused = false
 					fmt.Println("continuing")
+					superMX.Lock()
 					c.events <- StateChange{*turn, Executing}
+					superMX.Unlock()
 					pause <- false
 				} else {
 					paused = true
 					fmt.Println(*turn)
+					superMX.Lock()
 					c.events <- StateChange{*turn, Paused}
+					superMX.Unlock()
 					pause <- true
 				}
 			}
@@ -202,10 +216,8 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	exit := false
 
 	//get the initial alive cells and use them as input to CellsFlipped
-	// TODO: WHY DOES THIS CAUSE P TO FAIL?!
-	//initialFlippedCells := getAliveCells(world)
-	//c.events <- CellsFlipped{turn, initialFlippedCells}
-	c.events <- StateChange{turn, Executing}
+	initialFlippedCells := getAliveCells(world)
+	c.events <- CellsFlipped{turn, initialFlippedCells}
 	// Main game loop
 mainLoop:
 	for turn < p.Turns {
@@ -221,16 +233,19 @@ mainLoop:
 			break mainLoop
 		default:
 			// Call broker to advance to next state
-			flipped := new(stubs.Update)
-			err := client.Call(stubs.NextState, status, &flipped)
+			superMX.Lock()
+			update := new(stubs.Update)
+			err := client.Call(stubs.NextState, status, &update)
 			if err != nil {
 				panic(err)
 			}
-
+			world = update.World
 			// TODO: get visualisation tests to pass
-			c.events <- CellsFlipped{turn, flipped.Flipped}
+			c.events <- CellsFlipped{turn, update.Flipped}
 			c.events <- TurnComplete{turn}
+
 			turn++
+			superMX.Unlock()
 
 		}
 	}
@@ -239,10 +254,12 @@ mainLoop:
 	finishedL <- true
 	// If we finished the turns output the result
 	if !exit {
+		superMX.Lock()
 		world := saveOutput(client, turn, p, c)
 		aliveCells := getAliveCells(world)
 		c.events <- FinalTurnComplete{turn, aliveCells}
 		c.events <- StateChange{turn, Quitting}
+		superMX.Unlock()
 	}
 
 	// Close client
