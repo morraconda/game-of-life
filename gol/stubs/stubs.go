@@ -1,25 +1,34 @@
 package stubs
 
 import (
+	"uk.ac.bris.cs/gameoflife/gol"
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
 var Subscribe = "Broker.Subscribe"
-var NextState = "Broker.NextState"
 var Start = "Broker.Start"
 var Finish = "Broker.Finish"
 var Close = "Broker.Close"
+var HandleKey = "Broker.HandleKey"
 
-type Input struct {
-	World   [][]byte
-	Height  int
-	Width   int
-	Threads int
+type KeyPress struct {
+	Key    string
+	Paused bool
 }
 
-//type Output struct {
-//	World [][]byte
-//}
+type Input struct {
+	World    [][]byte
+	Height   int
+	Width    int
+	Threads  int
+	Turns    int
+	Callback string
+	Address  string
+}
+
+type Event struct {
+	gol.Event
+}
 
 type Request struct {
 	World  [][]byte

@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strconv"
 	"sync"
+	"time"
+	"uk.ac.bris.cs/gameoflife/gol"
 	"uk.ac.bris.cs/gameoflife/gol/stubs"
 	"uk.ac.bris.cs/gameoflife/util"
 )
@@ -19,17 +21,25 @@ var workerAddresses []*exec.Cmd
 var height int
 var width int
 var threads int
+var turns int
+var callback string
+var address string
+var distributor *rpc.Client
 var jobs = make(chan stubs.Request, 64)
 var jobsMX sync.RWMutex
 var world [][]byte
 var worldMX sync.RWMutex
 var newWorld [][]byte
 var newWorldMX sync.RWMutex
+var superMX sync.RWMutex
 var flipped []util.Cell
 var flippedMX sync.RWMutex
 var wg sync.WaitGroup
 var wgMX sync.RWMutex
 var pAddr *string
+var paused = make(chan bool)
+var quit = make(chan bool)
+var turn int
 
 // Deep copy one array into another
 func deepCopy(output *[][]byte, original *[][]byte) {
@@ -56,6 +66,17 @@ func spawnWorkers() {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func closeWorkers() {
+	for _, worker := range workerAddresses {
+		err := worker.Process.Kill()
+		if err != nil {
+			fmt.Println("Error: ", err)
+		}
+	}
+	os.Exit(0)
+	return
 }
 
 // Receive a board and slice it up into jobs
@@ -113,10 +134,37 @@ func subscriberLoop(client *rpc.Client, callback string) {
 	}
 }
 
-type Broker struct{}
+// get list of alive cells from a world
+func getAliveCells(world [][]byte) []util.Cell {
+	var alive []util.Cell
+	for i := 0; i < len(world); i++ {
+		for j := 0; j < len(world[i]); j++ {
+			if world[i][j] == 255 {
+				alive = append(alive, util.Cell{X: j, Y: i})
+			}
+		}
+	}
+	return alive
+}
 
-// NextState Called by distributor to increment the game by one step
-func (b *Broker) NextState(req stubs.StatusReport, res *stubs.Update) (err error) {
+func reportState(finished <-chan bool, wg *sync.WaitGroup) {
+	for {
+		select {
+		case <-finished:
+			wg.Done()
+			return
+		case <-time.After(2 * time.Second):
+			superMX.Lock()
+			alive := getAliveCells(world) //FIX
+			res := new(stubs.StatusReport)
+			distributor.Call(callback, gol.AliveCellsCount{turn, len(alive)}, &res)
+			superMX.Unlock()
+		}
+	}
+}
+
+// increment game loop by one step
+func nextState() {
 	publish()
 	// Wait until all jobs have been processed
 	wg.Wait()
@@ -124,8 +172,8 @@ func (b *Broker) NextState(req stubs.StatusReport, res *stubs.Update) (err error
 	newWorldMX.Lock()
 	flippedMX.Lock()
 	deepCopy(&world, &newWorld)
-	res.World = newWorld
-	res.Flipped = flipped
+	world = newWorld
+	//res.Flipped = flipped
 	flipped = nil
 	flippedMX.Unlock()
 	newWorldMX.Unlock()
@@ -133,12 +181,18 @@ func (b *Broker) NextState(req stubs.StatusReport, res *stubs.Update) (err error
 	return
 }
 
+// TODO: move global variables into struct
+type Broker struct{}
+
 // Start Called by distributor to load initial values
 func (b *Broker) Start(input stubs.Input, res *stubs.StatusReport) (err error) {
 	height = input.Height
 	width = input.Width
 	world = input.World
 	threads = input.Threads
+	turns = input.Turns
+	callback = input.Callback
+	address = input.Address
 	newWorld = make([][]byte, height)
 	for i := range newWorld {
 		newWorld[i] = make([]byte, width)
@@ -149,17 +203,72 @@ func (b *Broker) Start(input stubs.Input, res *stubs.StatusReport) (err error) {
 			spawnWorkers()
 		}
 	}
-	return
-}
 
-func (b *Broker) Close(req stubs.StatusReport, res *stubs.StatusReport) (err error) {
-	for _, worker := range workerAddresses {
-		err := worker.Process.Kill()
-		if err != nil {
-			fmt.Println("Error: ", err)
+	distributor, err = rpc.Dial("tcp", address)
+	if err != nil {
+		panic(err)
+	}
+	res = new(stubs.StatusReport)
+
+	turn := 0
+
+	//Make initial calls
+	initialFlippedCells := getAliveCells(world)
+	distributor.Call(callback, gol.CellsFlipped{turn, initialFlippedCells}, &res)
+	distributor.Call(callback, gol.StateChange{0, gol.Executing}, &res)
+
+	exit := false
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	finishedR := make(chan bool)
+	go reportState(finishedR, &wg)
+
+	// Main game loop
+mainLoop:
+	for turn < turns {
+		select {
+		case pause := <-paused:
+			// Halt loop and wait until pause is set to false
+			for pause {
+				pause = <-paused
+			}
+		case <-quit:
+			// Exit
+			exit = true
+			break mainLoop
+		default:
+			superMX.Lock()
+			nextState()
+
+			// TODO: move this into helper function and remove flipped cell computation from broker?
+			var f []util.Cell
+			for i := 0; i < len(world); i++ {
+				for j := 0; j < len(world[i]); j++ {
+					if world[i][j] != newWorld[i][j] {
+						f = append(f, util.Cell{j, i})
+					}
+				}
+			}
+
+			world = newWorld
+
+			distributor.Call(callback, gol.CellsFlipped{turn, f}, &res)
+			distributor.Call(callback, gol.TurnComplete{turn}, &res)
+			turn++
+
+			superMX.Unlock()
+
 		}
 	}
-	os.Exit(0)
+	if !exit {
+		superMX.Lock()
+		aliveCells := getAliveCells(world)
+		distributor.Call(callback, gol.FinalTurnComplete{turn, aliveCells}, &res)
+		distributor.Call(callback, gol.StateChange{turn, gol.Quitting}, &res)
+		superMX.Unlock()
+	}
+	finishedR <- true
+	wg.Wait()
 	return
 }
 
@@ -182,6 +291,56 @@ func (b *Broker) Subscribe(req stubs.Subscription, res *stubs.StatusReport) (err
 		go subscriberLoop(client, req.Callback)
 	} else {
 		fmt.Println("Error subscribing: ", err)
+	}
+	return
+}
+
+func (b *Broker) HandleKey(req stubs.KeyPress, res *stubs.StatusReport) (err error) {
+	if req.Key == "s" {
+		if !req.Paused {
+			paused <- true
+		}
+		superMX.Lock()
+		superMX.Unlock()
+		if !req.Paused {
+			paused <- false
+		}
+	} else if req.Key == "q" {
+		if !req.Paused {
+			paused <- true
+		}
+		superMX.Lock()
+		distributor.Call(callback, gol.FinalTurnComplete{turn, getAliveCells(world)}, *res)
+		distributor.Call(callback, gol.StateChange{turn, gol.Quitting}, *res)
+		superMX.Unlock()
+		quit <- true
+		paused <- false
+
+	} else if req.Key == "k" {
+		if !req.Paused {
+			paused <- true
+		}
+		superMX.Lock()
+		distributor.Call(callback, gol.FinalTurnComplete{turn, getAliveCells(world)}, *res)
+		distributor.Call(callback, gol.StateChange{turn, gol.Quitting}, *res)
+		superMX.Unlock()
+		quit <- true
+		paused <- false
+		closeWorkers()
+
+	} else if req.Key == "p" {
+		if req.Paused {
+			superMX.Lock()
+			distributor.Call(callback, gol.StateChange{turn, gol.Executing}, *res)
+			superMX.Unlock()
+			paused <- false
+		} else {
+			superMX.Lock()
+			distributor.Call(callback, gol.StateChange{turn, gol.Paused}, *res)
+			res.Message = strconv.Itoa(turn)
+			superMX.Unlock()
+			paused <- true
+		}
 	}
 	return
 }

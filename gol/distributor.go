@@ -1,11 +1,13 @@
 package gol
 
 import (
+	"flag"
 	"fmt"
 	"github.com/veandco/go-sdl2/sdl"
+	"log"
+	"net"
 	"net/rpc"
 	"sync"
-	"time"
 	"uk.ac.bris.cs/gameoflife/gol/stubs"
 	"uk.ac.bris.cs/gameoflife/util"
 )
@@ -20,6 +22,8 @@ type distributorChannels struct {
 	ioOutput   chan<- uint8
 	ioInput    <-chan uint8
 }
+
+var channel distributorChannels
 
 // prints cell contents
 func printCell(cell util.Cell) {
@@ -64,35 +68,6 @@ func writeToOutput(world [][]byte, turn int, p Params, outputChan chan<- byte) {
 	}
 }
 
-// get list of alive cells from a world
-func getAliveCells(world [][]byte) []util.Cell {
-	var alive []util.Cell
-	for i := 0; i < len(world); i++ {
-		for j := 0; j < len(world[i]); j++ {
-			if world[i][j] == 255 {
-				alive = append(alive, util.Cell{X: j, Y: i})
-			}
-		}
-	}
-	return alive
-}
-
-// reports state every 2 seconds
-func reportState(turn *int, world *[][]byte, c chan<- Event, finished <-chan bool, wg *sync.WaitGroup) {
-	for {
-		select {
-		case <-finished:
-			wg.Done()
-			return
-		case <-time.After(2 * time.Second):
-			superMX.Lock()
-			alive := getAliveCells(*world)
-			c <- Event(AliveCellsCount{*turn, len(alive)})
-			superMX.Unlock()
-		}
-	}
-}
-
 func saveOutput(client *rpc.Client, turn int, p Params, c distributorChannels) (world [][]byte) {
 	output := new(stubs.Update)
 	status := new(stubs.StatusReport)
@@ -115,8 +90,11 @@ func saveOutput(client *rpc.Client, turn int, p Params, c distributorChannels) (
 	return output.World
 }
 
-func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte, finished <-chan bool,
+func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 	quit chan<- bool, pause chan<- bool, p Params, c distributorChannels, client *rpc.Client, wg *sync.WaitGroup) {
+	req := new(stubs.KeyPress)
+	req.Paused = false
+	res := new(stubs.StatusReport)
 	paused := false
 	for {
 		select {
@@ -127,56 +105,37 @@ func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte, finished
 			switch key {
 			case sdl.K_s: // save
 				if !paused {
-					pause <- true
+					req.Paused = true
 				}
-				superMX.Lock()
-				saveOutput(client, *turn, p, c)
-				superMX.Unlock()
-				if !paused {
-					pause <- false
-				}
+				req.Key = "s"
+				client.Call(stubs.HandleKey, req, &res)
+				// add save
 			case sdl.K_q: // quit
 				if !paused {
-					pause <- true
+					req.Paused = true
 				}
-				superMX.Lock()
-				world := saveOutput(client, *turn, p, c)
-				c.events <- FinalTurnComplete{*turn, getAliveCells(world)}
-				c.events <- StateChange{*turn, Quitting}
-				superMX.Unlock()
-				quit <- true
-				pause <- false
+				req.Key = "q"
+				client.Call(stubs.HandleKey, req, &res)
+				// add save
 			case sdl.K_k: // shutdown
 				if !paused {
-					pause <- true
+					req.Paused = true
 				}
-				superMX.Lock()
-				saveOutput(client, *turn, p, c)
-				// Call broker to shut itself down
-				status := new(stubs.StatusReport)
-				err := client.Call(stubs.Close, status, &status)
-				if err != nil {
-					fmt.Println("Error: ", err)
-				}
-				c.events <- FinalTurnComplete{*turn, getAliveCells(*world)}
-				c.events <- StateChange{*turn, Quitting}
-				superMX.Unlock()
-				quit <- true
-				pause <- false
+				req.Key = "k"
+				client.Call(stubs.HandleKey, req, &res)
+				// add save
 			case sdl.K_p: // pause
 				if paused {
 					paused = false
+					req.Key = "p"
+					client.Call(stubs.HandleKey, req, &res)
 					fmt.Println("continuing")
-					superMX.Lock()
-					c.events <- StateChange{*turn, Executing}
-					superMX.Unlock()
 					pause <- false
 				} else {
 					paused = true
-					fmt.Println(*turn)
-					superMX.Lock()
-					c.events <- StateChange{*turn, Paused}
-					superMX.Unlock()
+					req.Key = "p"
+					client.Call(stubs.HandleKey, req, &res)
+					fmt.Println(res)
 					pause <- true
 				}
 			}
@@ -184,14 +143,49 @@ func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte, finished
 	}
 }
 
+// reports state every 2 seconds
+
+type Control struct{}
+
+func (b *Control) Event(req stubs.Event, res *stubs.StatusReport) (err error) {
+	channel.events <- req
+	return
+}
+
 // distributor executes all turns, sends work to broker
 func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
-	// Dial broker
-	client, _ := rpc.Dial("tcp", "127.0.0.1:8030")
+	pAddr := flag.String("ip", "127.0.0.1:8050", "IP and port to listen on")
+	brokerAddr := flag.String("broker", "127.0.0.1:8030", "Address of broker instance")
+	flag.Parse()
+
+	// Register own public functions
+	err := rpc.Register(&Control{})
+	if err != nil {
+		log.Fatalf("Failed to register Compute service: %v", err)
+	}
+
+	//Start listener
+	go func() {
+		listener, err := net.Listen("tcp", *pAddr)
+		if err != nil {
+			log.Fatalf("Failed to listen on %s: %v", *pAddr, err)
+		}
+		defer listener.Close()
+		rpc.Accept(listener)
+	}()
+
+	//Dial the broker
+	client, err := rpc.Dial("tcp", *brokerAddr)
+	if err != nil {
+		log.Fatalf("Failed to connect to broker: %v", err)
+	}
+
+	channel = c
 	// Get initial world
 	c.ioCommand <- ioInput
 	c.ioFilename <- getInputFilename(p)
 	world := getInitialWorld(c.ioInput, p)
+
 	// Pack initial world to be sent to broker
 	status := new(stubs.StatusReport)
 	input := new(stubs.Input)
@@ -199,80 +193,24 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	input.Width = p.ImageWidth
 	input.Height = p.ImageHeight
 	input.Threads = p.Threads
-	// Send initial world to broker
-	err := client.Call(stubs.Start, input, &status)
-	// Channels for communicating with ticker and keypress handler
+	input.Callback = "Control.Event"
+	input.Address = *pAddr
+
+	// Start goroutines
 	wg := sync.WaitGroup{}
-	wg.Add(2)
+	wg.Add(1)
 	quit := make(chan bool, 1)
-	finishedR := make(chan bool)
 	finishedL := make(chan bool)
 	pause := make(chan bool)
-	turn := 0
-	// Start alive cells ticker and keypress handler
-	go handleKeypress(keypresses, &turn, &world, finishedL, quit, pause, p, c, client, &wg)
-	go reportState(&turn, &world, c.events, finishedR, &wg)
-	exit := false
+	go handleKeypress(keypresses, finishedL, quit, pause, p, c, client, &wg)
 
-	//get the initial alive cells and use them as input to CellsFlipped
-	initialFlippedCells := getAliveCells(world)
-	c.events <- CellsFlipped{turn, initialFlippedCells}
-	c.events <- StateChange{0, Executing}
-	// Main game loop
-mainLoop:
-	for turn < p.Turns {
-		select {
-		case paused := <-pause:
-			// Halt loop and wait until pause is set to false
-			for paused {
-				paused = <-pause
-			}
-		case <-quit:
-			// Exit
-			exit = true
-			break mainLoop
-		default:
-			// Call broker to advance to next state
-			superMX.Lock()
-			update := new(stubs.Update)
-			// f := update.Flipped
-			err := client.Call(stubs.NextState, status, &update)
-			if err != nil {
-				panic(err)
-			}
-
-			// TODO: move this into helper function and remove flipped cell computation from broker?
-			var f []util.Cell
-			for i := 0; i < len(world); i++ {
-				for j := 0; j < len(world[i]); j++ {
-					if world[i][j] != update.World[i][j] {
-						f = append(f, util.Cell{j, i})
-					}
-				}
-			}
-
-			world = update.World
-
-			c.events <- CellsFlipped{turn, f}
-			c.events <- TurnComplete{turn}
-			turn++
-
-			superMX.Unlock()
-
-		}
+	// Start broker iteration
+	err = client.Call(stubs.Start, input, &status)
+	if err != nil {
+		fmt.Println("Error: ", err)
 	}
-	// Signal goroutines to return
-	finishedR <- true
-	finishedL <- true
-	// If we finished the turns output the result
-	if !exit {
-		superMX.Lock()
-		world := saveOutput(client, turn, p, c)
-		aliveCells := getAliveCells(world)
-		c.events <- FinalTurnComplete{turn, aliveCells}
-		c.events <- StateChange{turn, Quitting}
-		superMX.Unlock()
-	}
+
+	//TODO: BLOCK HERE
 
 	// Close client
 	err = client.Close()
@@ -280,16 +218,13 @@ mainLoop:
 		fmt.Println("Error: ", err)
 	}
 
-	// Wait for goroutines to confirm closure
+	// Tell goroutine to close and wait until they do
+	finishedL <- true
 	wg.Wait()
 	// Make sure that the Io has finished any output before exiting.
 	c.ioCommand <- ioCheckIdle
 	<-c.ioIdle
 	// Close the channel to stop the SDL goroutine gracefully. Removing may cause deadlock.
-	close(finishedR)
-	close(finishedL)
-	close(pause)
-	close(quit)
 	close(c.events)
 	return
 }
