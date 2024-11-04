@@ -31,6 +31,8 @@ var wg sync.WaitGroup
 var wgMX sync.RWMutex
 var pAddr *string
 
+//manage neighbor assignments and provide this information to each worker.
+
 // Deep copy one array into another
 func deepCopy(output *[][]byte, original *[][]byte) {
 	for i := 0; i < len(*original); i++ {
@@ -56,6 +58,8 @@ func spawnWorkers() {
 	if err != nil {
 		panic(err)
 	}
+
+	//now find a way to communicate addresses for haloexchange
 }
 
 // Receive a board and slice it up into jobs
@@ -201,8 +205,6 @@ func main() {
 			fmt.Printf("Error: no ports available")
 		}
 	}
-	//potentially tweak the above by iterating through all possible ports around the target port
-	//rather than binding to a random one?
 
 	defer listener.Close()
 	rpc.Accept(listener)

@@ -1,0 +1,2 @@
+2024/10/24 16:46:06 Worker started at: 127.0.0.1:8050
+2024/10/24 16:46:06 Failed to subscribe to broker: reading body gob: attempt to decode into a non-pointer

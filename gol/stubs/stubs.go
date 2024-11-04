@@ -17,16 +17,14 @@ type Input struct {
 	Threads int
 }
 
-//type Output struct {
-//	World [][]byte
-//}
-
 type Request struct {
-	World  [][]byte
-	StartY int
-	EndY   int
-	Height int
-	Width  int
+	World          [][]byte
+	StartY         int
+	EndY           int
+	Height         int
+	Width          int
+	TopNeighbor    string // Address of the top neighbor
+	BottomNeighbor string // Address of the bottom neighbor
 }
 
 type Response struct {
@@ -46,4 +44,14 @@ type Subscription struct {
 
 type StatusReport struct {
 	Message string
+}
+
+type HaloRequest struct {
+	Row        []byte
+	SenderID   string
+	ReceiverID string
+}
+
+type HaloResponse struct {
+	Received bool
 }

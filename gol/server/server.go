@@ -44,7 +44,7 @@ func getAdjacentCells(cell util.Cell, width int, height int) []util.Cell {
 	return adjacent
 }
 
-// return how many cells in a list are black
+// return how many cells in a list are black/alive
 func countAdjacentCells(current util.Cell, world [][]byte, width int, height int) int {
 	count := 0
 	cells := getAdjacentCells(current, width, height)
@@ -69,13 +69,61 @@ func getNextCell(cell util.Cell, world [][]byte, width int, height int) byte {
 	}
 }
 
-type Compute struct{}
+////look at the logic for the border overlap (also found in median filter
+////and try to transfer data for the halo regions needed
+
+////sending rows to neighbour via rpc address dialing
+func sendTopRow(topRow []byte, neighborAddr string) {
+	var haloRes stubs.HaloResponse
+	client, _ := rpc.Dial("tcp", neighborAddr) //dial the address of the neighbour
+	defer client.Close()
+	haloReq := stubs.HaloRequest{Row: topRow}
+	client.Call("Compute.GetBottomRow", haloReq, &haloRes)
+}
+
+func sendBottomRow(bottomRow []byte, neighborAddr string) {
+	var haloRes stubs.HaloResponse
+	client, _ := rpc.Dial("tcp", neighborAddr) //dial the address of the neighbour
+	defer client.Close()
+	haloReq := stubs.HaloRequest{Row: bottomRow}
+	client.Call("Compute.GetTopRow", haloReq, &haloRes)
+}
+
+type Compute struct {
+	topRow    []byte
+	bottomRow []byte
+	wg        sync.WaitGroup
+}
+
+// GetTopRow get the top row from a neighbour
+func (s *Compute) GetTopRow(haloReq stubs.HaloRequest, haloRes stubs.HaloResponse) {
+	s.topRow = haloReq.Row
+	haloRes.Received = true
+	s.wg.Done()
+	return
+}
+
+// GetBottomRow get the bottom row from a neighbour
+func (s *Compute) GetBottomRow(haloReq stubs.HaloRequest, haloRes stubs.HaloResponse) {
+	s.bottomRow = haloReq.Row
+	haloRes.Received = true
+	s.wg.Done()
+	return
+}
 
 func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) (err error) {
-	// initialise 2D slice of rows
+	//halo exchange first
+	topRow := req.World[req.StartY]
+	bottomRow := req.World[req.EndY-1]
+
+	s.wg.Add(2)
+	go sendTopRow(topRow, req.TopNeighbor)
+	go sendBottomRow(bottomRow, req.BottomNeighbor)
+	s.wg.Wait()
 
 	newWorld := make([][]byte, req.EndY-req.StartY)
 	var flipped []util.Cell
+
 	for i := req.StartY; i < req.EndY; i++ {
 		// initialise row, set the contents of the row accordingly
 		newWorld[i-req.StartY] = make([]byte, req.Width)
@@ -135,4 +183,5 @@ func main() {
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 	wg.Wait()
+
 }
