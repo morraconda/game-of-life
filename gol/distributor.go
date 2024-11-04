@@ -13,6 +13,10 @@ import (
 )
 
 var superMX sync.RWMutex
+var pAddr = flag.String("ip", "127.0.0.1:8050", "IP and port to listen on")
+var brokerAddr = flag.String("broker", "127.0.0.1:8030", "Address of broker instance")
+var once sync.Once
+var channels distributorChannels
 
 type distributorChannels struct {
 	events     chan<- Event
@@ -68,7 +72,7 @@ func writeToOutput(world [][]byte, turn int, p Params, outputChan chan<- byte) {
 	}
 }
 
-func saveOutput(client *rpc.Client, turn int, p Params, c distributorChannels) (world [][]byte) {
+func saveOutput(client *rpc.Client, p Params, c distributorChannels) (world [][]byte) {
 	output := new(stubs.Update)
 	status := new(stubs.StatusReport)
 	// get most recent output from broker
@@ -80,13 +84,13 @@ func saveOutput(client *rpc.Client, turn int, p Params, c distributorChannels) (
 	c.ioCommand <- ioCheckIdle
 	<-c.ioIdle
 	c.ioCommand <- ioOutput
-	c.ioFilename <- getOutputFilename(p, turn)
-	writeToOutput(output.World, turn, p, c.ioOutput)
+	c.ioFilename <- getOutputFilename(p, output.Turn)
+	writeToOutput(output.World, output.Turn, p, c.ioOutput)
 	// close io
 	c.ioCommand <- ioCheckIdle
 	<-c.ioIdle
 	// send write event
-	c.events <- ImageOutputComplete{turn, getOutputFilename(p, turn)}
+	c.events <- ImageOutputComplete{output.Turn, getOutputFilename(p, output.Turn)}
 	return output.World
 }
 
@@ -108,33 +112,49 @@ func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 					req.Paused = true
 				}
 				req.Key = "s"
-				client.Call(stubs.HandleKey, req, &res)
-				// add save
+				err := client.Call(stubs.HandleKey, req, &res)
+				if err != nil {
+					panic(err)
+				}
+				saveOutput(client, p, c)
 			case sdl.K_q: // quit
 				if !paused {
 					req.Paused = true
 				}
 				req.Key = "q"
-				client.Call(stubs.HandleKey, req, &res)
-				// add save
+				err := client.Call(stubs.HandleKey, req, &res)
+				if err != nil {
+					panic(err)
+				}
+				saveOutput(client, p, c)
 			case sdl.K_k: // shutdown
 				if !paused {
 					req.Paused = true
 				}
 				req.Key = "k"
-				client.Call(stubs.HandleKey, req, &res)
+				err := client.Call(stubs.HandleKey, req, &res)
+				if err != nil {
+					panic(err)
+				}
+				saveOutput(client, p, c)
 				// add save
 			case sdl.K_p: // pause
 				if paused {
 					paused = false
 					req.Key = "p"
-					client.Call(stubs.HandleKey, req, &res)
+					err := client.Call(stubs.HandleKey, req, &res)
+					if err != nil {
+						panic(err)
+					}
 					fmt.Println("continuing")
 					pause <- false
 				} else {
 					paused = true
 					req.Key = "p"
-					client.Call(stubs.HandleKey, req, &res)
+					err := client.Call(stubs.HandleKey, req, &res)
+					if err != nil {
+						panic(err)
+					}
 					fmt.Println(res)
 					pause <- true
 				}
@@ -143,36 +163,54 @@ func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 	}
 }
 
-// reports state every 2 seconds
-
 type Control struct{}
 
+// Forward events from the broker to SDL
 func (b *Control) Event(req stubs.Event, res *stubs.StatusReport) (err error) {
-	channel.events <- req
+	if req.Type == "StateChange" {
+		if req.State == "Executing" {
+			channel.events <- StateChange{req.Turn, Executing}
+		} else if req.State == "Paused" {
+			channel.events <- StateChange{req.Turn, Paused}
+		} else if req.State == "Quitting" {
+			channel.events <- StateChange{req.Turn, Executing}
+		}
+	} else if req.Type == "CellsFlipped" {
+		channel.events <- CellsFlipped{req.Turn, req.Cells}
+	} else if req.Type == "AliveCellsCount" {
+		channel.events <- AliveCellsCount{req.Turn, req.Count}
+	} else if req.Type == "TurnComplete" {
+		channel.events <- TurnComplete{req.Turn}
+	} else if req.Type == "FinalTurnComplete" {
+		channel.events <- FinalTurnComplete{req.Turn, req.Cells}
+	} else {
+		fmt.Println("Unknown Type!!!\n")
+	}
 	return
 }
 
 // distributor executes all turns, sends work to broker
 func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
-	pAddr := flag.String("ip", "127.0.0.1:8050", "IP and port to listen on")
-	brokerAddr := flag.String("broker", "127.0.0.1:8030", "Address of broker instance")
-	flag.Parse()
 
-	// Register own public functions
-	err := rpc.Register(&Control{})
-	if err != nil {
-		log.Fatalf("Failed to register Compute service: %v", err)
-	}
-
-	//Start listener
-	go func() {
-		listener, err := net.Listen("tcp", *pAddr)
+	// Perform server init if first time running
+	once.Do(func() {
+		flag.Parse()
+		// Register own public functions
+		err := rpc.Register(&Control{})
 		if err != nil {
-			log.Fatalf("Failed to listen on %s: %v", *pAddr, err)
+			log.Fatalf("Failed to register Compute service: %v", err)
 		}
-		defer listener.Close()
-		rpc.Accept(listener)
-	}()
+
+		//Start listener
+		go func() {
+			listener, err := net.Listen("tcp", *pAddr)
+			if err != nil {
+				log.Fatalf("Failed to listen on %s: %v", *pAddr, err)
+			}
+			defer listener.Close()
+			rpc.Accept(listener)
+		}()
+	})
 
 	//Dial the broker
 	client, err := rpc.Dial("tcp", *brokerAddr)
@@ -180,8 +218,8 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 		log.Fatalf("Failed to connect to broker: %v", err)
 	}
 
-	channel = c
 	// Get initial world
+	channel = c
 	c.ioCommand <- ioInput
 	c.ioFilename <- getInputFilename(p)
 	world := getInitialWorld(c.ioInput, p)
@@ -195,22 +233,23 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	input.Threads = p.Threads
 	input.Callback = "Control.Event"
 	input.Address = *pAddr
+	input.Turns = p.Turns
 
 	// Start goroutines
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 	quit := make(chan bool, 1)
-	finishedL := make(chan bool)
+	finished := make(chan bool)
 	pause := make(chan bool)
-	go handleKeypress(keypresses, finishedL, quit, pause, p, c, client, &wg)
+	go handleKeypress(keypresses, finished, quit, pause, p, c, client, &wg)
 
-	// Start broker iteration
-	err = client.Call(stubs.Start, input, &status)
-	if err != nil {
-		fmt.Println("Error: ", err)
+	// Run broker, block until it has finished
+	call := client.Go(stubs.Start, input, &status, nil)
+	select {
+	case <-quit:
+	case <-call.Done:
+		saveOutput(client, p, c)
 	}
-
-	//TODO: BLOCK HERE
 
 	// Close client
 	err = client.Close()
@@ -218,8 +257,8 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 		fmt.Println("Error: ", err)
 	}
 
-	// Tell goroutine to close and wait until they do
-	finishedL <- true
+	// Tell keyhandler to close and wait until it does
+	finished <- true
 	wg.Wait()
 	// Make sure that the Io has finished any output before exiting.
 	c.ioCommand <- ioCheckIdle

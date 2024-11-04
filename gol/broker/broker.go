@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"sync"
 	"time"
-	"uk.ac.bris.cs/gameoflife/gol"
 	"uk.ac.bris.cs/gameoflife/gol/stubs"
 	"uk.ac.bris.cs/gameoflife/util"
 )
@@ -44,7 +43,7 @@ var turn int
 // Deep copy one array into another
 func deepCopy(output *[][]byte, original *[][]byte) {
 	for i := 0; i < len(*original); i++ {
-		(*output)[i] = (*original)[i]
+		copy((*output)[i], (*original)[i])
 	}
 }
 
@@ -115,22 +114,15 @@ func subscriberLoop(client *rpc.Client, callback string) {
 			panic(err)
 		}
 		//Append the results to the new state
-		newWorldMX.Lock()
+		superMX.Lock()
 		for i := 0; i < len(response.World); i++ {
-
 			newWorld[job.StartY+i] = response.World[i]
-
 		}
-		newWorldMX.Unlock()
-		flippedMX.Lock()
 		for i := 0; i < len(response.Flipped); i++ {
-
 			flipped = append(flipped, response.Flipped[i])
 		}
-		flippedMX.Unlock()
-		wgMX.Lock()
+		superMX.Unlock()
 		wg.Done()
-		wgMX.Unlock()
 	}
 }
 
@@ -157,7 +149,10 @@ func reportState(finished <-chan bool, wg *sync.WaitGroup) {
 			superMX.Lock()
 			alive := getAliveCells(world) //FIX
 			res := new(stubs.StatusReport)
-			distributor.Call(callback, gol.AliveCellsCount{turn, len(alive)}, &res)
+			err := distributor.Call(callback, stubs.Event{Type: "AliveCellsCount", Turn: 0, Count: len(alive)}, &res)
+			if err != nil {
+				panic(err)
+			}
 			superMX.Unlock()
 		}
 	}
@@ -168,16 +163,10 @@ func nextState() {
 	publish()
 	// Wait until all jobs have been processed
 	wg.Wait()
-	worldMX.Lock()
-	newWorldMX.Lock()
-	flippedMX.Lock()
+	superMX.Lock()
 	deepCopy(&world, &newWorld)
-	world = newWorld
-	//res.Flipped = flipped
 	flipped = nil
-	flippedMX.Unlock()
-	newWorldMX.Unlock()
-	worldMX.Unlock()
+	superMX.Unlock()
 	return
 }
 
@@ -186,9 +175,11 @@ type Broker struct{}
 
 // Start Called by distributor to load initial values
 func (b *Broker) Start(input stubs.Input, res *stubs.StatusReport) (err error) {
+	superMX.Lock()
 	height = input.Height
 	width = input.Width
 	world = input.World
+	//deepCopy(&world, &input.World)
 	threads = input.Threads
 	turns = input.Turns
 	callback = input.Callback
@@ -197,6 +188,7 @@ func (b *Broker) Start(input stubs.Input, res *stubs.StatusReport) (err error) {
 	for i := range newWorld {
 		newWorld[i] = make([]byte, width)
 	}
+	superMX.Unlock()
 	// If there are not enough workers currently available, spawn more
 	if threads > workerCount {
 		for i := 0; i < threads-workerCount; i++ {
@@ -210,18 +202,24 @@ func (b *Broker) Start(input stubs.Input, res *stubs.StatusReport) (err error) {
 	}
 	res = new(stubs.StatusReport)
 
-	turn := 0
+	turn = 0
 
 	//Make initial calls
 	initialFlippedCells := getAliveCells(world)
-	distributor.Call(callback, gol.CellsFlipped{turn, initialFlippedCells}, &res)
-	distributor.Call(callback, gol.StateChange{0, gol.Executing}, &res)
+	err = distributor.Call(callback, stubs.Event{Type: "CellsFlipped", Turn: turn, Cells: initialFlippedCells}, &res)
+	if err != nil {
+		panic(err)
+	}
+	err = distributor.Call(callback, stubs.Event{Type: "StateChange", Turn: 0, State: "Executing"}, &res)
+	if err != nil {
+		panic(err)
+	}
 
 	exit := false
 	wg := sync.WaitGroup{}
 	wg.Add(1)
-	finishedR := make(chan bool)
-	go reportState(finishedR, &wg)
+	finished := make(chan bool)
+	go reportState(finished, &wg)
 
 	// Main game loop
 mainLoop:
@@ -237,50 +235,61 @@ mainLoop:
 			exit = true
 			break mainLoop
 		default:
-			superMX.Lock()
 			nextState()
 
-			// TODO: move this into helper function and remove flipped cell computation from broker?
+			superMX.Lock()
+			// TODO: move this into helper function
 			var f []util.Cell
 			for i := 0; i < len(world); i++ {
 				for j := 0; j < len(world[i]); j++ {
 					if world[i][j] != newWorld[i][j] {
-						f = append(f, util.Cell{j, i})
+						f = append(f, util.Cell{X: j, Y: i})
 					}
 				}
 			}
 
-			world = newWorld
+			deepCopy(&world, &newWorld)
 
-			distributor.Call(callback, gol.CellsFlipped{turn, f}, &res)
-			distributor.Call(callback, gol.TurnComplete{turn}, &res)
+			err = distributor.Call(callback, stubs.Event{Type: "CellsFlipped", Turn: turn, Cells: f}, &res)
+			if err != nil {
+				panic(err)
+			}
+			err = distributor.Call(callback, stubs.Event{Type: "TurnComplete", Turn: turn}, &res)
+			if err != nil {
+				panic(err)
+			}
 			turn++
-
 			superMX.Unlock()
-
 		}
 	}
 	if !exit {
 		superMX.Lock()
 		aliveCells := getAliveCells(world)
-		distributor.Call(callback, gol.FinalTurnComplete{turn, aliveCells}, &res)
-		distributor.Call(callback, gol.StateChange{turn, gol.Quitting}, &res)
+		err = distributor.Call(callback, stubs.Event{Type: "FinalTurnComplete", Turn: turn, Cells: aliveCells}, &res)
+		if err != nil {
+			panic(err)
+		}
+		err = distributor.Call(callback, stubs.Event{Type: "StateChange", Turn: turn, State: "Quitting"}, &res)
+		if err != nil {
+			panic(err)
+		}
 		superMX.Unlock()
 	}
-	finishedR <- true
+	finished <- true
 	wg.Wait()
 	return
 }
 
 // Finish Called by distributor to return final world
 func (b *Broker) Finish(req stubs.StatusReport, res *stubs.Update) (err error) {
-	worldMX.Lock()
+	superMX.Lock()
 	res.World = make([][]byte, len(world))
 	for i := range res.World {
 		res.World[i] = make([]byte, len(world[i]))
 	}
 	deepCopy(&res.World, &world)
-	worldMX.Unlock()
+	res.Turn = turn
+	superMX.Unlock()
 	return
 }
 
@@ -300,8 +309,6 @@ func (b *Broker) HandleKey(req stubs.KeyPress, res *stubs.StatusReport) (err err
 		if !req.Paused {
 			paused <- true
 		}
-		superMX.Lock()
-		superMX.Unlock()
 		if !req.Paused {
 			paused <- false
 		}
@@ -310,8 +317,14 @@ func (b *Broker) HandleKey(req stubs.KeyPress, res *stubs.StatusReport) (err err
 			paused <- true
 		}
 		superMX.Lock()
-		distributor.Call(callback, gol.FinalTurnComplete{turn, getAliveCells(world)}, *res)
-		distributor.Call(callback, gol.StateChange{turn, gol.Quitting}, *res)
+		err = distributor.Call(callback, stubs.Event{Type: "FinalTurnComplete", Turn: turn, Cells: getAliveCells(world)}, &res)
+		if err != nil {
+			panic(err)
+		}
+		err = distributor.Call(callback, stubs.Event{Type: "StateChange", Turn: turn, State: "Quitting"}, &res)
+		if err != nil {
+			panic(err)
+		}
 		superMX.Unlock()
 		quit <- true
 		paused <- false
@@ -321,8 +334,14 @@ func (b *Broker) HandleKey(req stubs.KeyPress, res *stubs.StatusReport) (err err
 			paused <- true
 		}
 		superMX.Lock()
-		distributor.Call(callback, gol.FinalTurnComplete{turn, getAliveCells(world)}, *res)
-		distributor.Call(callback, gol.StateChange{turn, gol.Quitting}, *res)
+		err = distributor.Call(callback, stubs.Event{Type: "FinalTurnComplete", Turn: turn, Cells: getAliveCells(world)}, &res)
+		if err != nil {
+			panic(err)
+		}
+		err = distributor.Call(callback, stubs.Event{Type: "StateChange", Turn: turn, State: "Quitting"}, &res)
+		if err != nil {
+			panic(err)
+		}
 		superMX.Unlock()
 		quit <- true
 		paused <- false
@@ -331,13 +350,19 @@ func (b *Broker) HandleKey(req stubs.KeyPress, res *stubs.StatusReport) (err err
 	} else if req.Key == "p" {
 		if req.Paused {
 			superMX.Lock()
-			distributor.Call(callback, gol.StateChange{turn, gol.Executing}, *res)
+			err = distributor.Call(callback, stubs.Event{Type: "StateChange", Turn: turn, State: "Executing"}, &res)
+			if err != nil {
+				panic(err)
+			}
 			superMX.Unlock()
 			paused <- false
 		} else {
 			superMX.Lock()
-			distributor.Call(callback, gol.StateChange{turn, gol.Paused}, *res)
 			res.Message = strconv.Itoa(turn)
+			err = distributor.Call(callback, stubs.Event{Type: "StateChange", Turn: turn, State: "Paused"}, &res)
+			if err != nil {
+				panic(err)
+			}
 			superMX.Unlock()
 			paused <- true
 		}

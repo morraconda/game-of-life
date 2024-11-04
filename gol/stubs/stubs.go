@@ -1,7 +1,6 @@
 package stubs
 
 import (
-	"uk.ac.bris.cs/gameoflife/gol"
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
@@ -27,7 +26,11 @@ type Input struct {
 }
 
 type Event struct {
-	gol.Event
+	Type  string
+	Turn  int
+	State string
+	Cells []util.Cell
+	Count int
 }
 
 type Request struct {
@@ -46,6 +49,7 @@ type Response struct {
 type Update struct {
 	Flipped []util.Cell
 	World   [][]byte
+	Turn    int
 }
 
 type Subscription struct {
