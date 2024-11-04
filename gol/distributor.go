@@ -3,10 +3,14 @@ package gol
 import (
 	"fmt"
 	"github.com/veandco/go-sdl2/sdl"
+	"net/rpc"
 	"sync"
 	"time"
+	"uk.ac.bris.cs/gameoflife/gol/stubs"
 	"uk.ac.bris.cs/gameoflife/util"
 )
+
+var superMX sync.RWMutex
 
 type distributorChannels struct {
 	events     chan<- Event
@@ -17,9 +21,15 @@ type distributorChannels struct {
 	ioInput    <-chan uint8
 }
 
-func checkIOIdle(c distributorChannels) {
-	c.ioCommand <- ioCheckIdle
-	<-c.ioIdle
+// prints cell contents
+func printCell(cell util.Cell) {
+	fmt.Printf("(%d, %d) ", cell.X, cell.Y)
+}
+
+func printCells(cells []util.Cell) {
+	for _, cell := range cells {
+		printCell(cell)
+	}
 }
 
 // get filename from params
@@ -27,94 +37,31 @@ func getInputFilename(p Params) string {
 	return fmt.Sprintf("%dx%d", p.ImageWidth, p.ImageHeight)
 }
 
-func getOutputFilename(p Params, turn int) string {
-	return fmt.Sprintf("%dx%dx%d", p.ImageWidth, p.ImageHeight, turn)
-}
-
-// returns in-bounds version of a cell if out of bounds
-func wrap(cell util.Cell, p Params) util.Cell {
-	if cell.X == -1 {
-		cell.X = p.ImageWidth - 1
-	} else if cell.X == p.ImageHeight {
-		cell.X = 0
-	}
-
-	if cell.Y == -1 {
-		cell.Y = p.ImageHeight - 1
-	} else if cell.Y == p.ImageHeight {
-		cell.Y = 0
-	}
-	return cell
-}
-
-// returns list of cells adjacent to the one given, accounting for wraparounds
-func getAdjacentCells(cell util.Cell, p Params) []util.Cell {
-	var adjacent []util.Cell
-	for i := -1; i <= 1; i++ {
-		for j := -1; j <= 1; j++ {
-			if !(i == 0 && j == 0) {
-				next := util.Cell{X: cell.X + j, Y: cell.Y + i}
-				next = wrap(next, p)
-				adjacent = append(adjacent, next)
-			}
-		}
-	}
-	return adjacent
-}
-
-// return how many cells in a list are black
-func countAdjacentCells(current util.Cell, world [][]byte, p Params) int {
-	count := 0
-	cells := getAdjacentCells(current, p)
-	for _, cell := range cells {
-		//count += world[cell.Y][cell.X] / 255
-		if world[cell.Y][cell.X] == 255 {
-			count++
-		}
-	}
-	return count
-}
-
-// get next value of a cell, given a world
-func getNextCell(cell util.Cell, world [][]byte, p Params) byte {
-	neighbours := countAdjacentCells(cell, world, p)
-	if neighbours == 3 {
-		return 255
-	} else if neighbours == 2 {
-		return world[cell.Y][cell.X]
-	} else {
-		return 0
-	}
+func getOutputFilename(p Params, t int) string {
+	return fmt.Sprintf("%dx%dx%d", p.ImageWidth, p.ImageHeight, t)
 }
 
 // gets initial 2D slice from input
-func getInitialWorld(c distributorChannels, p Params) [][]byte {
+func getInitialWorld(input <-chan byte, p Params) [][]byte {
+	// initialise 2D slice of rows
 	world := make([][]byte, p.ImageHeight)
-	c.ioCommand <- ioInput
-	c.ioFilename <- getInputFilename(p)
 	for i := 0; i < p.ImageHeight; i++ {
 		// initialise row, set the contents of the row accordingly
 		world[i] = make([]byte, p.ImageWidth)
 		for j := 0; j < p.ImageWidth; j++ {
-			world[i][j] = <-c.ioInput
+			world[i][j] = <-input
 		}
 	}
 	return world
 }
 
 // writes board state to output
-func writeToOutput(world [][]byte, turn int, p Params,
-	c distributorChannels) {
-	filename := getOutputFilename(p, turn)
-	c.ioCommand <- ioOutput
-	c.ioFilename <- filename
+func writeToOutput(world [][]byte, turn int, p Params, outputChan chan<- byte) {
 	for i := 0; i < p.ImageHeight; i++ {
 		for j := 0; j < p.ImageWidth; j++ {
-			c.ioOutput <- world[i][j]
+			outputChan <- world[i][j]
 		}
 	}
-	checkIOIdle(c)
-	c.events <- ImageOutputComplete{turn, filename}
 }
 
 // get list of alive cells from a world
@@ -130,168 +77,219 @@ func getAliveCells(world [][]byte) []util.Cell {
 	return alive
 }
 
-// get next board state and flipped cells
-func simulateTurn(world [][]byte, startY int, endY int, p Params,
-	outWorld chan<- [][]byte, outFlipped chan<- []util.Cell) {
-	// initialise 2D slice of rows
-	newWorld := make([][]byte, endY-startY)
-	var flipped []util.Cell
-	for i := startY; i < endY; i++ {
-		// initialise row, set the contents of the row accordingly
-		newWorld[i-startY] = make([]byte, p.ImageWidth)
-		for j := 0; j < p.ImageWidth; j++ {
-			// check for flipped cells
-			cell := util.Cell{X: j, Y: i}
-			old := newWorld[i-startY][j]
-			next := getNextCell(cell, world, p)
-			if old != next {
-				flipped = append(flipped, cell)
-			}
-			newWorld[i-startY][j] = next
-		}
-	}
-	//printCells(flipped)
-	outWorld <- newWorld
-	outFlipped <- flipped
-	return
-}
-
 // reports state every 2 seconds
-func reportState(turn *int, world *[][]byte, eventChan chan<- Event, done <-chan bool) {
-	finished := false
-	for !finished {
+func reportState(turn *int, world *[][]byte, c chan<- Event, finished <-chan bool, wg *sync.WaitGroup) {
+	for {
 		select {
-		case <-done:
-			finished = true
+		case <-finished:
+			wg.Done()
+			return
 		case <-time.After(2 * time.Second):
+			superMX.Lock()
 			alive := getAliveCells(*world)
-			eventChan <- AliveCellsCount{*turn, len(alive)}
+			c <- Event(AliveCellsCount{*turn, len(alive)})
+			superMX.Unlock()
 		}
 	}
 }
 
-// handle user keypresses
-// an input of true to the pauseChan means pause, false means quit
-func handleKeypresses(turn *int, world *[][]byte, p Params,
-	keypresses <-chan rune, c distributorChannels, pauseChan chan<- bool, done <-chan bool) {
-	finished := false
+func saveOutput(client *rpc.Client, turn int, p Params, c distributorChannels) (world [][]byte) {
+	output := new(stubs.Update)
+	status := new(stubs.StatusReport)
+	// get most recent output from broker
+	err := client.Call(stubs.Finish, status, &output)
+	if err != nil {
+		fmt.Println("Error: ", err)
+	}
+	// write to output
+	c.ioCommand <- ioCheckIdle
+	<-c.ioIdle
+	c.ioCommand <- ioOutput
+	c.ioFilename <- getOutputFilename(p, turn)
+	writeToOutput(output.World, turn, p, c.ioOutput)
+	// close io
+	c.ioCommand <- ioCheckIdle
+	<-c.ioIdle
+	// send write event
+	c.events <- ImageOutputComplete{turn, getOutputFilename(p, turn)}
+	return output.World
+}
+
+func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte, finished <-chan bool,
+	quit chan<- bool, pause chan<- bool, p Params, c distributorChannels, client *rpc.Client, wg *sync.WaitGroup) {
 	paused := false
-	for !finished {
+	for {
 		select {
-		case <-done:
-			finished = true
+		case <-finished: // stop handling
+			wg.Done()
+			return
 		case key := <-keypresses:
 			switch key {
-			// save
-			case sdl.K_s:
-				go writeToOutput(*world, *turn, p, c)
-			// quit
-			case sdl.K_q:
-				pauseChan <- false
-				finished = true
-			// pause
-			case sdl.K_p:
-				pauseChan <- true
-				paused = !paused
+			case sdl.K_s: // save
+				if !paused {
+					pause <- true
+				}
+				superMX.Lock()
+				saveOutput(client, *turn, p, c)
+				superMX.Unlock()
+				if !paused {
+					pause <- false
+				}
+			case sdl.K_q: // quit
+				if !paused {
+					pause <- true
+				}
+				superMX.Lock()
+				world := saveOutput(client, *turn, p, c)
+				c.events <- FinalTurnComplete{*turn, getAliveCells(world)}
+				c.events <- StateChange{*turn, Quitting}
+				superMX.Unlock()
+				quit <- true
+				pause <- false
+			case sdl.K_k: // shutdown
+				if !paused {
+					pause <- true
+				}
+				superMX.Lock()
+				saveOutput(client, *turn, p, c)
+				// Call broker to shut itself down
+				status := new(stubs.StatusReport)
+				err := client.Call(stubs.Close, status, &status)
+				if err != nil {
+					fmt.Println("Error: ", err)
+				}
+				c.events <- FinalTurnComplete{*turn, getAliveCells(*world)}
+				c.events <- StateChange{*turn, Quitting}
+				superMX.Unlock()
+				quit <- true
+				pause <- false
+			case sdl.K_p: // pause
 				if paused {
-					c.events <- StateChange{*turn, Paused}
-				} else {
+					paused = false
+					fmt.Println("continuing")
+					superMX.Lock()
 					c.events <- StateChange{*turn, Executing}
+					superMX.Unlock()
+					pause <- false
+				} else {
+					paused = true
+					fmt.Println(*turn)
+					superMX.Lock()
+					c.events <- StateChange{*turn, Paused}
+					superMX.Unlock()
+					pause <- true
 				}
 			}
 		}
 	}
 }
 
-// distributor divides the work between workers and interacts with other goroutines.
+// distributor executes all turns, sends work to broker
 func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
-	// init crap
-	turn := 0
-	quit := false
-	paused := make(chan bool)
-	finished := make(chan bool)
-	world := getInitialWorld(c, p)
-
+	// Dial broker
+	client, _ := rpc.Dial("tcp", "127.0.0.1:8030")
+	// Get initial world
+	c.ioCommand <- ioInput
+	c.ioFilename <- getInputFilename(p)
+	world := getInitialWorld(c.ioInput, p)
+	// Pack initial world to be sent to broker
+	status := new(stubs.StatusReport)
+	input := new(stubs.Input)
+	input.World = world
+	input.Width = p.ImageWidth
+	input.Height = p.ImageHeight
+	input.Threads = p.Threads
+	// Send initial world to broker
+	err := client.Call(stubs.Start, input, &status)
+	// Channels for communicating with ticker and keypress handler
 	wg := sync.WaitGroup{}
 	wg.Add(2)
-	// start alive cells and keypress goroutines
-	go func() {
-		reportState(&turn, &world, c.events, finished)
-		defer wg.Done()
-	}()
+	quit := make(chan bool, 1)
+	finishedR := make(chan bool)
+	finishedL := make(chan bool)
+	pause := make(chan bool)
+	turn := 0
+	// Start alive cells ticker and keypress handler
+	go handleKeypress(keypresses, &turn, &world, finishedL, quit, pause, p, c, client, &wg)
+	go reportState(&turn, &world, c.events, finishedR, &wg)
+	exit := false
 
-	go func() {
-		handleKeypresses(&turn, &world, p, keypresses, c, paused, finished)
-		defer wg.Done()
-	}()
-
+	//get the initial alive cells and use them as input to CellsFlipped
+	initialFlippedCells := getAliveCells(world)
+	c.events <- CellsFlipped{turn, initialFlippedCells}
 	c.events <- StateChange{0, Executing}
-	// execute all turns of the Game of Life.
-	for h := 0; !quit && h < p.Turns; h++ {
-		var newWorld [][]byte
-		var flipped []util.Cell
-		var startY = 0
-
-		//Make return channels for workers
-		worldChans := make([]chan [][]uint8, p.Threads)
-		for i := 0; i < p.Threads; i++ {
-			worldChans[i] = make(chan [][]uint8)
-		}
-		flippedChans := make([]chan []util.Cell, p.Threads)
-		for i := 0; i < p.Threads; i++ {
-			flippedChans[i] = make(chan []util.Cell)
-		}
-
-		//Dispatch workers
-		incrementY := p.ImageHeight / p.Threads
-		for i := 0; i < p.Threads; i++ {
-			if i == p.Threads-1 {
-				go simulateTurn(world, startY, p.ImageHeight, p, worldChans[i], flippedChans[i])
-			} else {
-				go simulateTurn(world, startY, (p.ImageHeight/p.Threads)+startY, p, worldChans[i], flippedChans[i])
+	// Main game loop
+mainLoop:
+	for turn < p.Turns {
+		select {
+		case paused := <-pause:
+			// Halt loop and wait until pause is set to false
+			for paused {
+				paused = <-pause
 			}
-			startY += incrementY
-		}
-
-		//Receive data from workers
-		current := 0
-		for current < p.Threads {
-			select {
-			case pause := <-paused:
-				if pause {
-					pause = <-paused
-				}
-				if !pause {
-					quit = true
-				}
-			case <-finished:
-				quit = true
-			case worldData := <-worldChans[current]:
-				newWorld = append(newWorld, worldData...)
-				flippedData := <-flippedChans[current]
-				flipped = append(flipped, flippedData...)
-				current++
+		case <-quit:
+			// Exit
+			exit = true
+			break mainLoop
+		default:
+			// Call broker to advance to next state
+			superMX.Lock()
+			update := new(stubs.Update)
+			// f := update.Flipped
+			err := client.Call(stubs.NextState, status, &update)
+			if err != nil {
+				panic(err)
 			}
-		}
-		// update new state
-		c.events <- CellsFlipped{turn, flipped}
-		world = newWorld
-		turn++
-	}
-	// close alive cells and keypress goroutines
-	finished <- true
-	if !quit {
-		finished <- true
-	}
-	aliveCells := getAliveCells(world)
-	// write state to output
-	c.events <- FinalTurnComplete{turn, aliveCells}
-	writeToOutput(world, turn, p, c)
-	c.events <- StateChange{turn, Quitting}
 
-	// wait for alive cells ticker and keypress goroutines to close
+			// TODO: move this into helper function and remove flipped cell computation from broker?
+			var f []util.Cell
+			for i := 0; i < len(world); i++ {
+				for j := 0; j < len(world[i]); j++ {
+					if world[i][j] != update.World[i][j] {
+						f = append(f, util.Cell{j, i})
+					}
+				}
+			}
+
+			world = update.World
+
+			c.events <- CellsFlipped{turn, f}
+			c.events <- TurnComplete{turn}
+			turn++
+
+			superMX.Unlock()
+
+		}
+	}
+	// Signal goroutines to return
+	finishedR <- true
+	finishedL <- true
+	// If we finished the turns output the result
+	if !exit {
+		superMX.Lock()
+		world := saveOutput(client, turn, p, c)
+		aliveCells := getAliveCells(world)
+		c.events <- FinalTurnComplete{turn, aliveCells}
+		c.events <- StateChange{turn, Quitting}
+		superMX.Unlock()
+	}
+
+	// Close client
+	err = client.Close()
+	if err != nil {
+		fmt.Println("Error: ", err)
+	}
+
+	// Wait for goroutines to confirm closure
 	wg.Wait()
-	checkIOIdle(c)
+	// Make sure that the Io has finished any output before exiting.
+	c.ioCommand <- ioCheckIdle
+	<-c.ioIdle
 	// Close the channel to stop the SDL goroutine gracefully. Removing may cause deadlock.
+	close(finishedR)
+	close(finishedL)
+	close(pause)
+	close(quit)
 	close(c.events)
+	return
 }

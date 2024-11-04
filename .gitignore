@@ -43,3 +43,4 @@ your-out\.txt
 your-time\.txt
 
 .DS_Store
+/gol/broker/testlogfile
