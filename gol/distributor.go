@@ -12,11 +12,9 @@ import (
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
-var superMX sync.RWMutex
 var pAddr = flag.String("ip", "127.0.0.1:8050", "IP and port to listen on")
 var brokerAddr = flag.String("broker", "127.0.0.1:8030", "Address of broker instance")
 var once sync.Once
-var channels distributorChannels
 
 type distributorChannels struct {
 	events     chan<- Event
@@ -94,6 +92,7 @@ func saveOutput(client *rpc.Client, p Params, c distributorChannels) (world [][]
 	return output.World
 }
 
+// forwards keypresses to broker for handling
 func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 	quit chan<- bool, pause chan<- bool, p Params, c distributorChannels, client *rpc.Client, wg *sync.WaitGroup) {
 	req := new(stubs.KeyPress)
@@ -108,9 +107,6 @@ func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 		case key := <-keypresses:
 			switch key {
 			case sdl.K_s: // save
-				if !paused {
-					req.Paused = true
-				}
 				req.Key = "s"
 				err := client.Call(stubs.HandleKey, req, &res)
 				if err != nil {
@@ -118,9 +114,6 @@ func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 				}
 				saveOutput(client, p, c)
 			case sdl.K_q: // quit
-				if !paused {
-					req.Paused = true
-				}
 				req.Key = "q"
 				err := client.Call(stubs.HandleKey, req, &res)
 				if err != nil {
@@ -128,9 +121,6 @@ func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 				}
 				saveOutput(client, p, c)
 			case sdl.K_k: // shutdown
-				if !paused {
-					req.Paused = true
-				}
 				req.Key = "k"
 				err := client.Call(stubs.HandleKey, req, &res)
 				if err != nil {
@@ -139,9 +129,8 @@ func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 				saveOutput(client, p, c)
 				// add save
 			case sdl.K_p: // pause
+				req.Paused = paused
 				if paused {
-					paused = false
-					req.Paused = false
 					req.Key = "p"
 					err := client.Call(stubs.HandleKey, req, &res)
 					if err != nil {
@@ -151,13 +140,12 @@ func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 					pause <- false
 				} else {
 					paused = true
-					req.Paused = true
 					req.Key = "p"
 					err := client.Call(stubs.HandleKey, req, &res)
 					if err != nil {
 						panic(err)
 					}
-					fmt.Println(res)
+					fmt.Println(res.Message)
 					pause <- true
 				}
 			}

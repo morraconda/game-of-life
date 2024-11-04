@@ -121,7 +121,9 @@ func getAliveCells(world [][]byte) []util.Cell {
 	return alive
 }
 
-func reportState(finished <-chan bool, wg *sync.WaitGroup, callback string, world *[][]byte, distributor *rpc.Client, turn *int) {
+// Ran synchronously, reports state to distributor every 2 seconds
+func reportState(finished <-chan bool, wg *sync.WaitGroup, callback string,
+	world *[][]byte, distributor *rpc.Client, turn *int) {
 	for {
 		select {
 		case <-finished:
@@ -141,7 +143,8 @@ func reportState(finished <-chan bool, wg *sync.WaitGroup, callback string, worl
 }
 
 // increment game loop by one step
-func nextState(width int, height int, threads int, world *[][]byte, newWorld *[][]byte, jobs chan stubs.Request, wg *sync.WaitGroup, flipped *[]util.Cell) {
+func nextState(width int, height int, threads int, world *[][]byte, newWorld *[][]byte,
+	jobs chan stubs.Request, wg *sync.WaitGroup, flipped *[]util.Cell) {
 	publish(width, height, threads, world, jobs, wg)
 	// Wait until all jobs have been processed
 	wg.Wait()
@@ -152,29 +155,34 @@ func nextState(width int, height int, threads int, world *[][]byte, newWorld *[]
 	return
 }
 
-// TODO: move global variables into struct
 type Broker struct {
-	workerCount     int
+	// Configuration Variables
+	height      int
+	width       int
+	turns       int
+	workerCount int
+	threads     int
+	callback    string
+	address     string
+
+	// Worker and Job Management
 	workerAddresses []*exec.Cmd
-	height          int
-	width           int
-	threads         int
-	turns           int
-	callback        string
-	address         string
 	distributor     *rpc.Client
 	jobs            chan stubs.Request
-	world           [][]byte
-	newWorld        [][]byte
-	paused          chan bool
-	quit            chan bool
-	turn            int
-	flipped         []util.Cell
 	wg              sync.WaitGroup
+
+	// State Variables
+	world    [][]byte
+	newWorld [][]byte
+	paused   chan bool
+	quit     chan bool
+	turn     int
+	flipped  []util.Cell
 }
 
-// Start Called by distributor to load initial values
+// Start Called by distributor
 func (b *Broker) Start(input stubs.Input, res *stubs.StatusReport) (err error) {
+	// Transfer and initialise variables
 	b.jobs = make(chan stubs.Request, 64)
 	b.paused = make(chan bool)
 	b.quit = make(chan bool)
@@ -182,16 +190,17 @@ func (b *Broker) Start(input stubs.Input, res *stubs.StatusReport) (err error) {
 	b.height = input.Height
 	b.width = input.Width
 	b.world = input.World
-	//deepCopy(&world, &input.World)
 	b.threads = input.Threads
 	b.turns = input.Turns
 	b.callback = input.Callback
 	b.address = input.Address
 	b.newWorld = make([][]byte, b.height)
+	b.turn = 0
 	for i := range b.newWorld {
 		b.newWorld[i] = make([]byte, b.width)
 	}
 	superMX.Unlock()
+
 	// If there are not enough workers currently available, spawn more
 	if b.threads > b.workerCount {
 		for i := 0; i < b.threads-b.workerCount; i++ {
@@ -199,15 +208,14 @@ func (b *Broker) Start(input stubs.Input, res *stubs.StatusReport) (err error) {
 		}
 	}
 
+	// Dial distributor
 	b.distributor, err = rpc.Dial("tcp", b.address)
 	if err != nil {
 		panic(err)
 	}
+
+	//Make initial event reports
 	res = new(stubs.StatusReport)
-
-	b.turn = 0
-
-	//Make initial calls
 	initialFlippedCells := getAliveCells(b.world)
 	err = b.distributor.Call(b.callback, stubs.Event{Type: "CellsFlipped", Turn: b.turn, Cells: initialFlippedCells}, &res)
 	if err != nil {
@@ -222,6 +230,7 @@ func (b *Broker) Start(input stubs.Input, res *stubs.StatusReport) (err error) {
 	doneWG := sync.WaitGroup{}
 	doneWG.Add(1)
 	finished := make(chan bool)
+	// Start report state goroutine
 	go reportState(finished, &doneWG, b.callback, &b.world, b.distributor, &b.turn)
 
 	// Main game loop
@@ -238,10 +247,12 @@ mainLoop:
 			exit = true
 			break mainLoop
 		default:
+			// Increment state
 			nextState(b.width, b.height, b.threads, &b.world, &b.newWorld, b.jobs, &b.wg, &b.flipped)
 
 			superMX.Lock()
 			// TODO: move this into helper function
+			// Build list of flipped cells
 			var f []util.Cell
 			for i := 0; i < len(b.world); i++ {
 				for j := 0; j < len(b.world[i]); j++ {
@@ -251,8 +262,10 @@ mainLoop:
 				}
 			}
 
+			// Overwrite old world
 			deepCopy(&b.world, &b.newWorld)
 
+			// Call distrubtor with events
 			err = b.distributor.Call(b.callback, stubs.Event{Type: "CellsFlipped", Turn: b.turn, Cells: f}, &res)
 			if err != nil {
 				fmt.Println(err)
@@ -265,6 +278,7 @@ mainLoop:
 			superMX.Unlock()
 		}
 	}
+	// If the program was not exited with a keypress we still need to send events and save
 	if !exit {
 		superMX.Lock()
 		aliveCells := getAliveCells(b.world)
@@ -278,6 +292,8 @@ mainLoop:
 		}
 		superMX.Unlock()
 	}
+
+	// Tell gouroutine to finish and wait for it to do so
 	finished <- true
 	doneWG.Wait()
 	return
@@ -307,15 +323,11 @@ func (b *Broker) Subscribe(req stubs.Subscription, res *stubs.StatusReport) (err
 	return
 }
 
+// HandleKey called by distributor to forward keypresses
 func (b *Broker) HandleKey(req stubs.KeyPress, res *stubs.StatusReport) (err error) {
 	placeHolder := new(stubs.StatusReport)
 	if req.Key == "s" {
-		if !req.Paused {
-			b.paused <- true
-		}
-		if !req.Paused {
-			b.paused <- false
-		}
+		// do nothing for now
 	} else if req.Key == "q" {
 		if !req.Paused {
 			b.paused <- true
@@ -346,10 +358,10 @@ func (b *Broker) HandleKey(req stubs.KeyPress, res *stubs.StatusReport) (err err
 		if err != nil {
 			fmt.Println(err)
 		}
+		closeWorkers(b.workerAddresses)
 		superMX.Unlock()
 		b.quit <- true
 		b.paused <- false
-		closeWorkers(b.workerAddresses)
 
 	} else if req.Key == "p" {
 		if req.Paused {
