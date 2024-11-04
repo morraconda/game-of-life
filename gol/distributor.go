@@ -141,6 +141,7 @@ func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 			case sdl.K_p: // pause
 				if paused {
 					paused = false
+					req.Paused = false
 					req.Key = "p"
 					err := client.Call(stubs.HandleKey, req, &res)
 					if err != nil {
@@ -150,6 +151,7 @@ func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 					pause <- false
 				} else {
 					paused = true
+					req.Paused = true
 					req.Key = "p"
 					err := client.Call(stubs.HandleKey, req, &res)
 					if err != nil {
