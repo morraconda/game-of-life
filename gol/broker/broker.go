@@ -52,7 +52,7 @@ func closeWorkers(workerAddresses []*exec.Cmd) {
 	for _, worker := range workerAddresses {
 		err := worker.Process.Kill()
 		if err != nil {
-			fmt.Println("Error: ", err)
+			fmt.Println("1 ", err)
 		}
 	}
 	os.Exit(0)
@@ -135,7 +135,7 @@ func reportState(finished <-chan bool, wg *sync.WaitGroup, callback string,
 			res := new(stubs.StatusReport)
 			err := distributor.Call(callback, stubs.Event{Type: "AliveCellsCount", Turn: *turn, Count: len(alive)}, &res)
 			if err != nil {
-				fmt.Println(err)
+				fmt.Println("2", err)
 			}
 			superMX.Unlock()
 		}
@@ -268,11 +268,11 @@ mainLoop:
 			// Call distributor with events
 			err = b.distributor.Call(b.callback, stubs.Event{Type: "CellsFlipped", Turn: b.turn, Cells: f}, &res)
 			if err != nil {
-				fmt.Println(err)
+				fmt.Println("3", err)
 			}
 			err = b.distributor.Call(b.callback, stubs.Event{Type: "TurnComplete", Turn: b.turn}, &res)
 			if err != nil {
-				fmt.Println(err)
+				fmt.Println("4", err)
 			}
 			b.turn++
 			superMX.Unlock()
@@ -284,11 +284,11 @@ mainLoop:
 		aliveCells := getAliveCells(b.world)
 		err = b.distributor.Call(b.callback, stubs.Event{Type: "FinalTurnComplete", Turn: b.turn, Cells: aliveCells}, &res)
 		if err != nil {
-			fmt.Println(err)
+			fmt.Println("5", err)
 		}
 		err = b.distributor.Call(b.callback, stubs.Event{Type: "StateChange", Turn: b.turn, State: "Quitting"}, &res)
 		if err != nil {
-			fmt.Println(err)
+			fmt.Println("6", err)
 		}
 		superMX.Unlock()
 	}
@@ -318,7 +318,7 @@ func (b *Broker) Subscribe(req stubs.Subscription, res *stubs.StatusReport) (err
 	if err == nil {
 		go subscriberLoop(client, req.Callback, b.jobs, &b.newWorld, &b.flipped, &b.wg)
 	} else {
-		fmt.Println("Error subscribing: ", err)
+		fmt.Println("7", err)
 	}
 	return
 }
@@ -335,11 +335,11 @@ func (b *Broker) HandleKey(req stubs.KeyPress, res *stubs.StatusReport) (err err
 		superMX.Lock()
 		err = b.distributor.Call(b.callback, stubs.Event{Type: "FinalTurnComplete", Turn: b.turn, Cells: getAliveCells(b.world)}, &placeHolder)
 		if err != nil {
-			fmt.Println(err)
+			fmt.Println("8", err)
 		}
 		err = b.distributor.Call(b.callback, stubs.Event{Type: "StateChange", Turn: b.turn, State: "Quitting"}, &placeHolder)
 		if err != nil {
-			fmt.Println(err)
+			fmt.Println("9", err)
 		}
 		superMX.Unlock()
 		b.quit <- true
@@ -352,11 +352,11 @@ func (b *Broker) HandleKey(req stubs.KeyPress, res *stubs.StatusReport) (err err
 		superMX.Lock()
 		err = b.distributor.Call(b.callback, stubs.Event{Type: "FinalTurnComplete", Turn: b.turn, Cells: getAliveCells(b.world)}, &placeHolder)
 		if err != nil {
-			fmt.Println(err)
+			fmt.Println("10", err)
 		}
 		err = b.distributor.Call(b.callback, stubs.Event{Type: "StateChange", Turn: b.turn, State: "Quitting"}, &placeHolder)
 		if err != nil {
-			fmt.Println(err)
+			fmt.Println("11", err)
 		}
 		closeWorkers(b.workerAddresses)
 		superMX.Unlock()
@@ -368,7 +368,7 @@ func (b *Broker) HandleKey(req stubs.KeyPress, res *stubs.StatusReport) (err err
 			superMX.Lock()
 			err = b.distributor.Call(b.callback, stubs.Event{Type: "StateChange", Turn: b.turn, State: "Executing"}, &placeHolder)
 			if err != nil {
-				fmt.Println(err)
+				fmt.Println("12", err)
 			}
 			superMX.Unlock()
 			b.paused <- false
@@ -377,7 +377,7 @@ func (b *Broker) HandleKey(req stubs.KeyPress, res *stubs.StatusReport) (err err
 			res.Message = strconv.Itoa(b.turn)
 			err = b.distributor.Call(b.callback, stubs.Event{Type: "StateChange", Turn: b.turn, State: "Paused"}, &placeHolder)
 			if err != nil {
-				fmt.Println(err)
+				fmt.Println("13", err)
 			}
 			superMX.Unlock()
 			b.paused <- true
@@ -391,7 +391,7 @@ func main() {
 	flag.Parse()
 	err := rpc.Register(&Broker{})
 	if err != nil {
-		fmt.Println("Error: ", err)
+		fmt.Println("14", err)
 	}
 	listener, err := net.Listen("tcp", ":"+*pAddr)
 	if err != nil {
