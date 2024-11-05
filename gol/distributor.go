@@ -92,7 +92,7 @@ func saveOutput(client *rpc.Client, p Params, c distributorChannels) (world [][]
 	return output.World
 }
 
-// forwards keypresses to broker for handling
+// forwards key presses to broker for handling
 func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 	quit chan<- bool, pause chan<- bool, p Params, c distributorChannels, client *rpc.Client, wg *sync.WaitGroup) {
 	req := new(stubs.KeyPress)
@@ -155,7 +155,7 @@ func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 
 type Control struct{}
 
-// Forward events from the broker to SDL
+// Event forwards events from the broker to SDL
 func (b *Control) Event(req stubs.Event, res *stubs.StatusReport) (err error) {
 	if req.Type == "StateChange" {
 		if req.State == "Executing" {
@@ -174,7 +174,7 @@ func (b *Control) Event(req stubs.Event, res *stubs.StatusReport) (err error) {
 	} else if req.Type == "FinalTurnComplete" {
 		channel.events <- FinalTurnComplete{req.Turn, req.Cells}
 	} else {
-		fmt.Println("Unknown Type!!!\n")
+		fmt.Println("Error: unknown event type")
 	}
 	return
 }

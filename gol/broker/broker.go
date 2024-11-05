@@ -265,7 +265,7 @@ mainLoop:
 			// Overwrite old world
 			deepCopy(&b.world, &b.newWorld)
 
-			// Call distrubtor with events
+			// Call distributor with events
 			err = b.distributor.Call(b.callback, stubs.Event{Type: "CellsFlipped", Turn: b.turn, Cells: f}, &res)
 			if err != nil {
 				fmt.Println(err)
