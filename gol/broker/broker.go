@@ -14,14 +14,15 @@ import (
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
-// Public variables
-
+//TODO: optimise mutex locks to reduce waiting time (ie: separate superMX into a few independent locks)
 var superMX sync.RWMutex
 var jobsMX sync.RWMutex
 var wgMX sync.RWMutex
 var pAddr *string
+var workerAddresses []*exec.Cmd
+var workerCount int
 
-// Deep copy one array into another
+// Helper: deep copy one array into another
 func deepCopy(output *[][]byte, original *[][]byte) {
 	for i := 0; i < len(*original); i++ {
 		copy((*output)[i], (*original)[i])
@@ -160,19 +161,17 @@ func nextState(width int, height int, threads int, world *[][]byte, newWorld *[]
 
 type Broker struct {
 	// Configuration Variables
-	height      int
-	width       int
-	turns       int
-	workerCount int
-	threads     int
-	callback    string
-	address     string
+	height   int
+	width    int
+	turns    int
+	threads  int
+	callback string
+	address  string
 
 	// Worker and Job Management
-	workerAddresses []*exec.Cmd
-	distributor     *rpc.Client
-	jobs            chan stubs.Request
-	wg              sync.WaitGroup
+	distributor *rpc.Client
+	jobs        chan stubs.Request
+	wg          sync.WaitGroup
 
 	// State Variables
 	world    [][]byte
@@ -209,9 +208,9 @@ func (b *Broker) Init(input stubs.Input, res *stubs.StatusReport) (err error) {
 	superMX.Unlock()
 
 	// If there are not enough workers currently available, spawn more
-	if b.threads > b.workerCount {
-		for i := 0; i < b.threads-b.workerCount; i++ {
-			spawnWorkers(b.workerAddresses, b.workerCount)
+	if b.threads > workerCount {
+		for i := 0; i < b.threads-workerCount; i++ {
+			spawnWorkers(workerAddresses, workerCount)
 		}
 	}
 
@@ -338,6 +337,14 @@ func (b *Broker) HandleKey(req stubs.KeyPress, res *stubs.StatusReport) (err err
 	placeHolder := new(stubs.StatusReport)
 	if req.Key == "s" {
 		// do nothing for now
+		if !req.Paused {
+			b.paused <- true
+		}
+		// TODO: replace this with something less stupid
+		time.Sleep(100 * time.Millisecond)
+		if !req.Paused {
+			b.paused <- true
+		}
 	} else if req.Key == "q" {
 		if !req.Paused {
 			b.paused <- true
@@ -352,6 +359,7 @@ func (b *Broker) HandleKey(req stubs.KeyPress, res *stubs.StatusReport) (err err
 			fmt.Println("9", err)
 		}
 		superMX.Unlock()
+		time.Sleep(100 * time.Millisecond)
 		b.quit <- true
 		b.paused <- false
 
@@ -368,7 +376,7 @@ func (b *Broker) HandleKey(req stubs.KeyPress, res *stubs.StatusReport) (err err
 		if err != nil {
 			fmt.Println("11", err)
 		}
-		closeWorkers(b.workerAddresses)
+		closeWorkers(workerAddresses)
 		superMX.Unlock()
 		b.quit <- true
 		b.paused <- false

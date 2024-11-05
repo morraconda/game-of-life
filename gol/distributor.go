@@ -71,6 +71,7 @@ func writeToOutput(world [][]byte, turn int, p Params, outputChan chan<- byte) {
 }
 
 func saveOutput(client *rpc.Client, p Params, c distributorChannels) (world [][]byte) {
+	fmt.Println("SAVING")
 	output := new(stubs.Update)
 	status := new(stubs.StatusReport)
 	// get most recent output from broker
