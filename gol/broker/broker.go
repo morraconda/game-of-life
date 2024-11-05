@@ -136,6 +136,9 @@ func reportState(finished <-chan bool, wg *sync.WaitGroup, callback string,
 			err := distributor.Call(callback, stubs.Event{Type: "AliveCellsCount", Turn: *turn, Count: len(alive)}, &res)
 			if err != nil {
 				fmt.Println("2", err)
+				wg.Done()
+				superMX.Unlock()
+				return
 			}
 			superMX.Unlock()
 		}
@@ -180,8 +183,13 @@ type Broker struct {
 	flipped  []util.Cell
 }
 
-// Start Called by distributor
-func (b *Broker) Start(input stubs.Input, res *stubs.StatusReport) (err error) {
+func (b *Broker) Init(input stubs.Input, res *stubs.StatusReport) (err error) {
+	// Dial distributor
+	b.address = input.Address
+	b.distributor, err = rpc.Dial("tcp", b.address)
+	if err != nil {
+		panic(err)
+	}
 	// Transfer and initialise variables
 	b.jobs = make(chan stubs.Request, 64)
 	b.paused = make(chan bool)
@@ -193,7 +201,6 @@ func (b *Broker) Start(input stubs.Input, res *stubs.StatusReport) (err error) {
 	b.threads = input.Threads
 	b.turns = input.Turns
 	b.callback = input.Callback
-	b.address = input.Address
 	b.newWorld = make([][]byte, b.height)
 	b.turn = 0
 	for i := range b.newWorld {
@@ -208,29 +215,28 @@ func (b *Broker) Start(input stubs.Input, res *stubs.StatusReport) (err error) {
 		}
 	}
 
-	// Dial distributor
-	b.distributor, err = rpc.Dial("tcp", b.address)
-	if err != nil {
-		panic(err)
-	}
-
 	//Make initial event reports
-	res = new(stubs.StatusReport)
+	placeHolder := new(stubs.StatusReport)
 	initialFlippedCells := getAliveCells(b.world)
-	err = b.distributor.Call(b.callback, stubs.Event{Type: "CellsFlipped", Turn: b.turn, Cells: initialFlippedCells}, &res)
+	err = b.distributor.Call(b.callback, stubs.Event{Type: "CellsFlipped", Turn: 0, Cells: initialFlippedCells}, &placeHolder)
 	if err != nil {
 		panic(err)
 	}
-	err = b.distributor.Call(b.callback, stubs.Event{Type: "StateChange", Turn: 0, State: "Executing"}, &res)
+	err = b.distributor.Call(b.callback, stubs.Event{Type: "StateChange", Turn: 0, State: "Executing"}, &placeHolder)
 	if err != nil {
 		panic(err)
 	}
+	return err
+}
 
+// Start Called by distributor
+func (b *Broker) Start(req stubs.StatusReport, res *stubs.StatusReport) (err error) {
+
+	// Start report state goroutine
 	exit := false
 	doneWG := sync.WaitGroup{}
 	doneWG.Add(1)
 	finished := make(chan bool)
-	// Start report state goroutine
 	go reportState(finished, &doneWG, b.callback, &b.world, b.distributor, &b.turn)
 
 	// Main game loop
@@ -268,11 +274,15 @@ mainLoop:
 			// Call distributor with events
 			err = b.distributor.Call(b.callback, stubs.Event{Type: "CellsFlipped", Turn: b.turn, Cells: f}, &res)
 			if err != nil {
+				exit = true
 				fmt.Println("3", err)
+				break mainLoop
 			}
 			err = b.distributor.Call(b.callback, stubs.Event{Type: "TurnComplete", Turn: b.turn}, &res)
 			if err != nil {
+				exit = true
 				fmt.Println("4", err)
+				break mainLoop
 			}
 			b.turn++
 			superMX.Unlock()
@@ -293,10 +303,10 @@ mainLoop:
 		superMX.Unlock()
 	}
 
-	// Tell gouroutine to finish and wait for it to do so
+	// Tell goroutine to finish and wait for it to do so
 	finished <- true
 	doneWG.Wait()
-	return
+	return err
 }
 
 // Finish Called by distributor to return final world

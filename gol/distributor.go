@@ -94,7 +94,8 @@ func saveOutput(client *rpc.Client, p Params, c distributorChannels) (world [][]
 
 // forwards key presses to broker for handling
 func handleKeypress(keypresses <-chan rune, finished <-chan bool,
-	quit chan<- bool, pause chan<- bool, p Params, c distributorChannels, client *rpc.Client, wg *sync.WaitGroup) {
+	quit chan<- bool, p Params, c distributorChannels, client *rpc.Client, wg *sync.WaitGroup) {
+	//time.Sleep(1 * time.Second)
 	req := new(stubs.KeyPress)
 	req.Paused = false
 	res := new(stubs.StatusReport)
@@ -131,13 +132,12 @@ func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 			case sdl.K_p: // pause
 				req.Paused = paused
 				if paused {
+					paused = false
 					req.Key = "p"
 					err := client.Call(stubs.HandleKey, req, &res)
 					if err != nil {
 						panic(err)
 					}
-					fmt.Println("continuing")
-					pause <- false
 				} else {
 					paused = true
 					req.Key = "p"
@@ -146,7 +146,6 @@ func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 						panic(err)
 					}
 					fmt.Println(res.Message)
-					pause <- true
 				}
 			}
 		}
@@ -229,17 +228,24 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 	quit := make(chan bool, 1)
-	finished := make(chan bool)
-	pause := make(chan bool)
-	go handleKeypress(keypresses, finished, quit, pause, p, c, client, &wg)
+	finished := make(chan bool, 1)
 
+	err = client.Call(stubs.Init, input, &status)
+	if err != nil {
+	}
+	go handleKeypress(keypresses, finished, quit, p, c, client, &wg)
 	// Run broker, block until it has finished
-	call := client.Go(stubs.Start, input, &status, nil)
+	call := client.Go(stubs.Start, status, &status, nil)
 	select {
 	case <-quit:
 	case <-call.Done:
 		saveOutput(client, p, c)
 	}
+	fmt.Println("Exited loop")
+
+	// Tell keyhandler to close and wait until it does
+	finished <- true
+	wg.Wait()
 
 	// Close client
 	err = client.Close()
@@ -247,9 +253,6 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 		fmt.Println("Error: ", err)
 	}
 
-	// Tell keyhandler to close and wait until it does
-	finished <- true
-	wg.Wait()
 	// Make sure that the Io has finished any output before exiting.
 	c.ioCommand <- ioCheckIdle
 	<-c.ioIdle

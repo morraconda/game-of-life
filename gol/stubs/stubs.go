@@ -6,6 +6,7 @@ import (
 
 var Subscribe = "Broker.Subscribe"
 var Start = "Broker.Start"
+var Init = "Broker.Init"
 var Finish = "Broker.Finish"
 var Close = "Broker.Close"
 var HandleKey = "Broker.HandleKey"
