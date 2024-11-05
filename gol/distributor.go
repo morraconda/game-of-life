@@ -2,14 +2,12 @@ package gol
 
 import (
 	"fmt"
-	"github.com/veandco/go-sdl2/sdl"
 	"sync"
 	"time"
+
+	"github.com/veandco/go-sdl2/sdl"
 	"uk.ac.bris.cs/gameoflife/util"
 )
-
-var superMX sync.RWMutex
-var wg sync.WaitGroup
 
 type distributorChannels struct {
 	events     chan<- Event
@@ -66,17 +64,16 @@ func getAliveCells(world [][]byte) []util.Cell {
 }
 
 // reports state every 2 seconds
-func reportState(turn *int, world *[][]byte, c chan<- Event, finished <-chan bool) {
+func reportState(turn *int, world *[][]byte, c chan<- Event, done <-chan bool, lock *sync.Mutex) {
 	for {
 		select {
-		case <-finished:
-			wg.Done()
+		case <-done:
 			return
 		case <-time.After(2 * time.Second):
-			superMX.Lock()
+			lock.Lock()
 			alive := getAliveCells(*world)
 			c <- Event(AliveCellsCount{*turn, len(alive)})
-			superMX.Unlock()
+			lock.Unlock()
 		}
 	}
 }
@@ -86,74 +83,52 @@ func saveOutput(world [][]byte, turn int, p Params, c distributorChannels) {
 	c.ioCommand <- ioCheckIdle
 	<-c.ioIdle
 	c.ioCommand <- ioOutput
-	c.ioFilename <- getOutputFilename(p, turn)
+	filename := getOutputFilename(p, turn)
+	c.ioFilename <- filename
+
 	writeToOutput(world, turn, p, c.ioOutput)
+	fmt.Println("-- successfully wrote to output")
 	// close io
 	c.ioCommand <- ioCheckIdle
 	<-c.ioIdle
 	// send write event
-	c.events <- ImageOutputComplete{turn, getOutputFilename(p, turn)}
+	fmt.Println("-- sending image event")
+	c.events <- ImageOutputComplete{turn, filename}
 }
 
-func handleKeypress(keypresses <-chan rune, turn int, world [][]byte, finished <-chan bool,
-	quit chan<- bool, pause chan<- bool, p Params, c distributorChannels) {
+func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte, done <-chan bool,
+	quit chan<- bool, pauseChan chan<- bool, p Params, c distributorChannels, lock *sync.Mutex) {
 	paused := false
 	for {
 		select {
-		case <-finished: // stop handling
-			wg.Done()
+		case <-done:
 			return
 		case key := <-keypresses:
 			switch key {
 			case sdl.K_s: // save
-				if !paused {
-					pause <- true
-				}
-				superMX.Lock()
-				saveOutput(world, turn, p, c)
-				superMX.Unlock()
-				if !paused {
-					pause <- false
-				}
+				fmt.Println("-- s pressed")
+				lock.Lock()
+				//fmt.Println("locked mutex")
+				saveOutput(*world, *turn, p, c)
+				lock.Unlock()
 			case sdl.K_q: // quit
-				if !paused {
-					pause <- true
-				}
-				superMX.Lock()
-				saveOutput(world, turn, p, c)
-				c.events <- FinalTurnComplete{turn, getAliveCells(world)}
-				c.events <- StateChange{turn, Quitting}
-				superMX.Unlock()
+				fmt.Println("-- q pressed")
+				pauseChan <- false
 				quit <- true
-				pause <- false
-			case sdl.K_k: // shutdown
-				if !paused {
-					pause <- true
-				}
-				superMX.Lock()
-				saveOutput(world, turn, p, c)
-
-				c.events <- FinalTurnComplete{turn, getAliveCells(world)}
-				c.events <- StateChange{turn, Quitting}
-				superMX.Unlock()
-				quit <- true
-				pause <- false
 			case sdl.K_p: // pause
+				fmt.Println("-- p pressed")
+				lock.Lock()
 				if paused {
-					paused = false
-					fmt.Println("continuing")
-					superMX.Lock()
-					c.events <- StateChange{turn, Executing}
-					superMX.Unlock()
-					pause <- false
+					fmt.Println("-- continuing")
+					c.events <- StateChange{*turn, Executing}
+					pauseChan <- false
 				} else {
-					paused = true
-					fmt.Println(turn)
-					superMX.Lock()
-					c.events <- StateChange{turn, Paused}
-					superMX.Unlock()
-					pause <- true
+					fmt.Println("-- paused on Turn", *turn)
+					c.events <- StateChange{*turn, Paused}
+					pauseChan <- true
 				}
+				lock.Unlock()
+				paused = !paused
 			}
 		}
 	}
@@ -167,71 +142,84 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	world := getInitialWorld(c.ioInput, p)
 
 	// Channels for communicating with ticker and keypress handler
-	wg.Add(2)
+	pauseChan := make(chan bool, 1)
+	finishedL := make(chan bool, 1)
+	finishedR := make(chan bool, 1)
 	quit := make(chan bool, 1)
-	finishedR := make(chan bool)
-	finishedL := make(chan bool)
-	pause := make(chan bool)
 	turn := 0
-	// Start alive cells ticker and keypress handler
-	go handleKeypress(keypresses, turn, world, finishedL, quit, pause, p, c)
-	go reportState(&turn, &world, c.events, finishedR)
-	exit := false
+	var wg sync.WaitGroup
+	var lock sync.Mutex
 
-	//get the initial alive cells and use them as input to CellsFlipped
+	c.events <- StateChange{turn, Executing}
+	// get the initial alive cells and use them as input to CellsFlipped
 	initialFlippedCells := getAliveCells(world)
 	c.events <- CellsFlipped{turn, initialFlippedCells}
-	c.events <- StateChange{0, Executing}
+
+	// Start alive cells ticker and keypress handler
+	wg.Add(2)
+	go func() {
+		handleKeypress(keypresses, &turn, &world, finishedL, quit, pauseChan, p, c, &lock)
+		defer wg.Done()
+	}()
+	go func() {
+		reportState(&turn, &world, c.events, finishedR, &lock)
+		defer wg.Done()
+	}()
+
 	// Main game loop
-mainLoop:
 	for turn < p.Turns {
 		select {
-		case paused := <-pause:
-			// Halt loop and wait until pause is set to false
-			for paused {
-				paused = <-pause
-			}
 		case <-quit:
-			// Exit
-			exit = true
-			break mainLoop
+			fmt.Println("-- quitting")
+			break
+		case paused := <-pauseChan:
+			if paused {
+				<-pauseChan
+			}
 		default:
 			// advance to next state
 			newWorld, flipped := simulateTurn(world, p)
-			superMX.Lock()
+			lock.Lock()
 			world = newWorld
-			saveOutput(world, turn, p, c)
+			//saveOutput(world, turn, p, c)
 			c.events <- CellsFlipped{turn, flipped}
 			c.events <- TurnComplete{turn}
 			turn++
-			superMX.Unlock()
-
+			lock.Unlock()
 		}
 	}
-	// Signal goroutines to return
-	finishedR <- true
+
 	finishedL <- true
-	// If we finished the turns output the result
-	if !exit {
-		superMX.Lock()
-		saveOutput(world, turn, p, c)
-		aliveCells := getAliveCells(world)
-		c.events <- FinalTurnComplete{turn, aliveCells}
-		c.events <- StateChange{turn, Quitting}
-		superMX.Unlock()
-	}
+	fmt.Println("-- hi")
+	finishedR <- true
+	fmt.Println("-- hii")
 
 	// Wait for goroutines to confirm closure
 	wg.Wait()
+	fmt.Println("-- hiiiii")
+
+	close(finishedL)
+	close(finishedR)
+	close(pauseChan)
+	close(quit)
+
+	// output final image
+	saveOutput(world, turn, p, c)
+	aliveCells := getAliveCells(world)
+	c.events <- FinalTurnComplete{turn, aliveCells}
+	c.events <- StateChange{turn, Quitting}
+
+	// Close the channel to stop the SDL goroutine gracefully. Removing may cause deadlock.
+	close(c.events)
+
 	// Make sure that the Io has finished any output before exiting.
+	fmt.Println("-- hiiiiiiiiiiiiiii")
 	c.ioCommand <- ioCheckIdle
 	<-c.ioIdle
-	// Close the channel to stop the SDL goroutine gracefully. Removing may cause deadlock.
-	close(finishedR)
-	close(finishedL)
-	close(pause)
-	close(quit)
-	close(c.events)
+
+	close(c.ioCommand)
+
+	fmt.Println("-- we did it yippppeeee")
 }
 
 // Receive a board and slice it up into jobs
