@@ -23,8 +23,8 @@ type Request struct {
 	EndY           int
 	Height         int
 	Width          int
-	TopNeighbor    string // Address of the top neighbor
-	BottomNeighbor string // Address of the bottom neighbor
+	TopNeighbor    string // Address of the top neighbor of a worker (the one before)
+	BottomNeighbor string // Address of the bottom neighbor of the worker (the one after)
 }
 
 type Response struct {

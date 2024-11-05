@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/rpc"
@@ -73,20 +74,26 @@ func getNextCell(cell util.Cell, world [][]byte, width int, height int) byte {
 ////and try to transfer data for the halo regions needed
 
 ////sending rows to neighbour via rpc address dialing
-func sendTopRow(topRow []byte, neighborAddr string) {
+func sendTopRow(topRow []byte, neighborAddr string) error {
 	var haloRes stubs.HaloResponse
-	client, _ := rpc.Dial("tcp", neighborAddr) //dial the address of the neighbour
+	client, err := rpc.Dial("tcp", neighborAddr) //dial the address of the neighbour
+	if err != nil {
+		fmt.Println("Error sending row", err)
+	}
 	defer client.Close()
 	haloReq := stubs.HaloRequest{Row: topRow}
-	client.Call("Compute.GetBottomRow", haloReq, &haloRes)
+	return client.Call("Compute.GetBottomRow", haloReq, &haloRes)
 }
 
-func sendBottomRow(bottomRow []byte, neighborAddr string) {
+func sendBottomRow(bottomRow []byte, neighborAddr string) error {
 	var haloRes stubs.HaloResponse
-	client, _ := rpc.Dial("tcp", neighborAddr) //dial the address of the neighbour
+	client, err := rpc.Dial("tcp", neighborAddr) //dial the address of the neighbour
+	if err != nil {
+		fmt.Println("Error sending row", err)
+	}
 	defer client.Close()
 	haloReq := stubs.HaloRequest{Row: bottomRow}
-	client.Call("Compute.GetTopRow", haloReq, &haloRes)
+	return client.Call("Compute.GetTopRow", haloReq, &haloRes)
 }
 
 type Compute struct {
@@ -112,7 +119,7 @@ func (s *Compute) GetBottomRow(haloReq stubs.HaloRequest, haloRes stubs.HaloResp
 }
 
 func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) (err error) {
-	//halo exchange first
+	//Halo exchange first
 	topRow := req.World[req.StartY]
 	bottomRow := req.World[req.EndY-1]
 

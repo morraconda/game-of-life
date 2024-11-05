@@ -16,6 +16,7 @@ import (
 // Public variables
 var workerCount int
 var workerAddresses []*exec.Cmd
+var workerAddressStrings []string
 var height int
 var width int
 var threads int
@@ -32,7 +33,6 @@ var wgMX sync.RWMutex
 var pAddr *string
 
 //manage neighbor assignments and provide this information to each worker.
-
 // Deep copy one array into another
 func deepCopy(output *[][]byte, original *[][]byte) {
 	for i := 0; i < len(*original); i++ {
@@ -42,6 +42,7 @@ func deepCopy(output *[][]byte, original *[][]byte) {
 
 // Spawn a new worker, this worker will dial itself into the broker
 func spawnWorkers() {
+
 	// Allocate a random free address
 	listener, err := net.Listen("tcp", ":0")
 	if err != nil {
@@ -49,6 +50,7 @@ func spawnWorkers() {
 	}
 	defer listener.Close()
 	port := listener.Addr().(*net.TCPAddr).Port
+	workerAddressStrings = append(workerAddressStrings, ":"+strconv.Itoa(port)) //append the worker address to this slice
 
 	// Start a worker at this address
 	cmd := exec.Command("go", "run", "../server/server.go", "-ip=127.0.0.1:"+strconv.Itoa(port), "-broker=127.0.0.1:"+*pAddr)
@@ -58,8 +60,6 @@ func spawnWorkers() {
 	if err != nil {
 		panic(err)
 	}
-
-	//now find a way to communicate addresses for haloexchange
 }
 
 // Receive a board and slice it up into jobs
@@ -70,6 +70,7 @@ func publish() {
 	worldMX.Unlock()
 	incrementY := height / threads
 	startY := 0
+
 	for i := 0; i < threads; i++ {
 		splitRequest.StartY = startY
 		if i == threads-1 {
@@ -80,6 +81,17 @@ func publish() {
 		startY += incrementY
 		jobsMX.Lock()
 		wgMX.Lock()
+
+		//pass the addresses of neighbours to the top and bottom of the split request
+		splitRequest.TopNeighbor = workerAddressStrings[i-1]
+		if i == 0 {
+			continue
+		}
+		splitRequest.BottomNeighbor = workerAddressStrings[i-1]
+		if i == threads-1 {
+			continue
+		} //CHECK THIS
+
 		jobs <- *splitRequest
 		wg.Add(1)
 		jobsMX.Unlock()
@@ -97,6 +109,7 @@ func subscriberLoop(client *rpc.Client, callback string) {
 		if err != nil {
 			panic(err)
 		}
+
 		//Append the results to the new state
 		newWorldMX.Lock()
 		for i := 0; i < len(response.World); i++ {
