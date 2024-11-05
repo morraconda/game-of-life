@@ -150,10 +150,10 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	var wg sync.WaitGroup
 	var lock sync.Mutex
 
-	c.events <- StateChange{turn, Executing}
 	// get the initial alive cells and use them as input to CellsFlipped
 	initialFlippedCells := getAliveCells(world)
 	c.events <- CellsFlipped{turn, initialFlippedCells}
+	c.events <- StateChange{turn, Executing}
 
 	// Start alive cells ticker and keypress handler
 	wg.Add(2)
@@ -167,21 +167,31 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	}()
 
 	// Main game loop
-	for turn < p.Turns {
+	done := false
+	for !done && turn < p.Turns {
 		select {
 		case <-quit:
 			fmt.Println("-- quitting")
-			break
+			done = true
 		case paused := <-pauseChan:
 			if paused {
 				<-pauseChan
 			}
 		default:
 			// advance to next state
-			newWorld, flipped := simulateTurn(world, p)
+			newWorld, _ := simulateTurn(world, p)
 			lock.Lock()
-			world = newWorld
+
 			//saveOutput(world, turn, p, c)
+			var flipped []util.Cell
+			for i := 0; i < p.ImageHeight; i++ {
+				for j := 0; j < p.ImageWidth; j++ {
+					if world[i][j] != newWorld[i][j] {
+						flipped = append(flipped, util.Cell{X: j, Y: i})
+					}
+				}
+			}
+			world = newWorld
 			c.events <- CellsFlipped{turn, flipped}
 			c.events <- TurnComplete{turn}
 			turn++
