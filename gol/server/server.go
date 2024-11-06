@@ -12,6 +12,7 @@ import (
 )
 
 var listener net.Listener
+var f *os.File
 
 // returns in-bounds version of a cell if out of bounds
 func wrap(cell util.Cell, width int, height int) util.Cell {
@@ -73,7 +74,7 @@ type Compute struct{}
 
 func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) (err error) {
 	// initialise 2D slice of rows
-
+	log.Printf("Job processing")
 	newWorld := make([][]byte, req.EndY-req.StartY)
 	var flipped []util.Cell
 	for i := req.StartY; i < req.EndY; i++ {
@@ -93,11 +94,13 @@ func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) (err erro
 
 	res.World = newWorld
 	res.Flipped = flipped
+	log.Printf("Job processed")
 	return
 }
 
 func main() {
-	f, err := os.OpenFile("testlogfile", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	err := *new(error)
+	f, err = os.OpenFile("testlogfile", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
 		log.Fatalf("error opening log: %v", err)
 	}

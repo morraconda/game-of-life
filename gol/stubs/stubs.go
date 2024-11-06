@@ -13,13 +13,11 @@ var Quit = "Broker.Quit"
 var ShutDown = "Broker.ShutDown"
 
 type Input struct {
-	World    [][]byte
-	Height   int
-	Width    int
-	Threads  int
-	Turns    int
-	Callback string
-	Address  string
+	World   [][]byte
+	Height  int
+	Width   int
+	Threads int
+	Turns   int
 }
 
 type Event struct {

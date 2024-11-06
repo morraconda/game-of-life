@@ -93,7 +93,8 @@ func saveOutput(client *rpc.Client, p Params, c distributorChannels) (world [][]
 }
 
 // Ran synchronously, reports state to distributor every 2 seconds
-func reportState(finished <-chan bool, wg *sync.WaitGroup, client *rpc.Client, c distributorChannels) {
+func reportState(finished <-chan bool, wg *sync.WaitGroup, client *rpc.Client, c distributorChannels, initWG *sync.WaitGroup) {
+	initWG.Wait()
 	for {
 		select {
 		case <-finished:
@@ -119,7 +120,8 @@ func reportState(finished <-chan bool, wg *sync.WaitGroup, client *rpc.Client, c
 
 // forwards key presses to broker for handling
 func handleKeypress(keypresses <-chan rune, finished <-chan bool,
-	quit chan<- bool, p Params, c distributorChannels, client *rpc.Client, wg *sync.WaitGroup) {
+	quit chan<- bool, p Params, c distributorChannels, client *rpc.Client, wg *sync.WaitGroup, initWG *sync.WaitGroup) {
+	initWG.Wait()
 	paused := false
 	for {
 		select {
@@ -165,6 +167,7 @@ func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 				if err != nil {
 					fmt.Println("Error quitting in quit: ", err)
 				}
+				quit <- true
 			case sdl.K_k: // shutdown
 				if !paused {
 					req.Value = 1
@@ -188,7 +191,9 @@ func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 				if err != nil {
 					fmt.Println("Error shutting down in shutdown: ", err)
 				}
+				quit <- true
 			case sdl.K_p: // pause
+				fmt.Println("PAUSE")
 				if paused {
 					paused = false
 					req.Value = 0
@@ -235,15 +240,10 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	input.Width = p.ImageWidth
 	input.Height = p.ImageHeight
 	input.Threads = p.Threads
-	input.Callback = "Control.Event"
-	input.Address = *pAddr
 	input.Turns = p.Turns
 
-	// Initialise broker
-	err = client.Call(stubs.Init, input, &status)
-	if err != nil {
-		fmt.Println("Error initialising in quit: ", err)
-	}
+	initWG := sync.WaitGroup{}
+	initWG.Add(1)
 
 	// Start goroutines
 	wg := sync.WaitGroup{}
@@ -251,8 +251,14 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	quit := make(chan bool, 1)
 	finishedR := make(chan bool, 1)
 	finishedL := make(chan bool, 1)
-	go handleKeypress(keypresses, finishedR, quit, p, c, client, &wg)
-	go reportState(finishedL, &wg, client, c)
+	go handleKeypress(keypresses, finishedR, quit, p, c, client, &wg, &initWG)
+	go reportState(finishedL, &wg, client, c, &initWG)
+
+	// Initialise broker
+	err = client.Call(stubs.Init, input, &status)
+	if err != nil {
+		fmt.Println("Error initialising in quit: ", err)
+	}
 
 	// Send initial events
 	req := new(stubs.StatusReport)
@@ -266,6 +272,7 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 
 	// Run main loop in broker, block until it has finished
 	call := client.Go(stubs.Start, status, &status, nil)
+	initWG.Done()
 	select {
 	case <-quit:
 	case <-call.Done:

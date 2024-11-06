@@ -20,6 +20,7 @@ var wgMX sync.RWMutex
 var pAddr *string
 var workerAddresses []*exec.Cmd
 var workerCount int
+var jobs = make(chan stubs.Request, 64)
 
 // Helper: deep copy one array into another
 func deepCopy(output *[][]byte, original *[][]byte) {
@@ -29,7 +30,7 @@ func deepCopy(output *[][]byte, original *[][]byte) {
 }
 
 // Spawn a new worker, this worker will dial itself into the broker
-func spawnWorkers(workerAddresses []*exec.Cmd, workerCount int) {
+func spawnWorkers() {
 	// Allocate a random free address
 	listener, err := net.Listen("tcp", ":0")
 	if err != nil {
@@ -48,7 +49,7 @@ func spawnWorkers(workerAddresses []*exec.Cmd, workerCount int) {
 	}
 }
 
-func closeWorkers(workerAddresses []*exec.Cmd) {
+func closeWorkers() {
 	for _, worker := range workerAddresses {
 		err := worker.Process.Kill()
 		if err != nil {
@@ -60,7 +61,7 @@ func closeWorkers(workerAddresses []*exec.Cmd) {
 }
 
 // Receive a board and slice it up into jobs
-func publish(width int, height int, threads int, world *[][]byte, jobs chan stubs.Request, wg *sync.WaitGroup) {
+func publish(width int, height int, threads int, world *[][]byte, wg *sync.WaitGroup) {
 	splitRequest := new(stubs.Request)
 	superMX.Lock()
 	splitRequest.World = *world
@@ -68,6 +69,8 @@ func publish(width int, height int, threads int, world *[][]byte, jobs chan stub
 	superMX.Unlock()
 	incrementY := height / threads
 	startY := 0
+	jobsMX.Lock()
+	wgMX.Lock()
 	for i := 0; i < threads; i++ {
 		splitRequest.StartY = startY
 		if i == threads-1 {
@@ -76,23 +79,25 @@ func publish(width int, height int, threads int, world *[][]byte, jobs chan stub
 			splitRequest.EndY = incrementY + startY
 		}
 		startY += incrementY
-		jobsMX.Lock()
-		wgMX.Lock()
+
 		jobs <- *splitRequest
 		wg.Add(1)
-		jobsMX.Unlock()
-		wgMX.Unlock()
 	}
+	wgMX.Unlock()
+	jobsMX.Unlock()
 }
 
 // Routine ran once per server instance, takes jobs from the queue and sends them to the server
-func subscriberLoop(client *rpc.Client, callback string, jobs chan stubs.Request, newWorld *[][]byte, flipped *[]util.Cell, wg *sync.WaitGroup) {
+func subscriberLoop(client *rpc.Client, callback string, newWorld *[][]byte, wg *sync.WaitGroup) {
 	for {
 		//Take a job from the job queue
+		//jobsMX.Lock()
 		job := <-jobs
+		//jobsMX.Unlock()
 		response := new(stubs.Response) // Empty response
 		err := client.Call(callback, job, response)
 		if err != nil {
+
 			panic(err)
 		}
 		//Append the results to the new state
@@ -100,11 +105,13 @@ func subscriberLoop(client *rpc.Client, callback string, jobs chan stubs.Request
 		for i := 0; i < len(response.World); i++ {
 			(*newWorld)[job.StartY+i] = response.World[i]
 		}
-		for i := 0; i < len(response.Flipped); i++ {
-			*flipped = append(*flipped, response.Flipped[i])
-		}
+		//for i := 0; i < len(response.Flipped); i++ {
+		//	*flipped = append(*flipped, response.Flipped[i])
+		//}
 		superMX.Unlock()
+		wgMX.Lock()
 		wg.Done()
+		wgMX.Unlock()
 	}
 }
 
@@ -122,30 +129,25 @@ func getAliveCells(world [][]byte) []util.Cell {
 }
 
 // increment game loop by one step
-func nextState(width int, height int, threads int, world *[][]byte, newWorld *[][]byte,
-	jobs chan stubs.Request, wg *sync.WaitGroup, flipped *[]util.Cell) {
-	publish(width, height, threads, world, jobs, wg)
+func nextState(width int, height int, threads int, world *[][]byte, newWorld *[][]byte, wg *sync.WaitGroup) {
+	publish(width, height, threads, world, wg)
 	// Wait until all jobs have been processed
 	wg.Wait()
 	superMX.Lock()
 	deepCopy(world, newWorld)
-	flipped = nil
 	superMX.Unlock()
 	return
 }
 
 type Broker struct {
 	// Configuration Variables
-	height   int
-	width    int
-	turns    int
-	threads  int
-	callback string
-	address  string
+	height  int
+	width   int
+	turns   int
+	threads int
 
 	// Worker and Job Management
 	distributor *rpc.Client
-	jobs        chan stubs.Request
 	wg          sync.WaitGroup
 
 	// State Variables
@@ -155,13 +157,10 @@ type Broker struct {
 	paused   chan bool
 	quit     chan bool
 	turn     int
-	flipped  []util.Cell
 }
 
 func (b *Broker) Init(input stubs.Input, res *stubs.StatusReport) (err error) {
 	// Transfer and initialise variables
-	b.jobs = make(chan stubs.Request, 64)
-	b.paused = make(chan bool)
 	b.quit = make(chan bool)
 	superMX.Lock()
 	b.height = input.Height
@@ -169,7 +168,6 @@ func (b *Broker) Init(input stubs.Input, res *stubs.StatusReport) (err error) {
 	b.world = input.World
 	b.threads = input.Threads
 	b.turns = input.Turns
-	b.callback = input.Callback
 	b.newWorld = make([][]byte, b.height)
 	b.oldWorld = make([][]byte, b.height)
 	b.turn = 0
@@ -182,7 +180,7 @@ func (b *Broker) Init(input stubs.Input, res *stubs.StatusReport) (err error) {
 	// If there are not enough workers currently available, spawn more
 	if b.threads > workerCount {
 		for i := 0; i < b.threads-workerCount; i++ {
-			spawnWorkers(workerAddresses, workerCount)
+			spawnWorkers()
 		}
 	}
 	return err
@@ -190,7 +188,6 @@ func (b *Broker) Init(input stubs.Input, res *stubs.StatusReport) (err error) {
 
 // Start Called by distributor
 func (b *Broker) Start(req stubs.StatusReport, res *stubs.StatusReport) (err error) {
-
 	// Main game loop
 mainLoop:
 	for b.turn < b.turns {
@@ -205,8 +202,7 @@ mainLoop:
 			break mainLoop
 		default:
 			// Increment state
-			nextState(b.width, b.height, b.threads, &b.world, &b.newWorld, b.jobs, &b.wg, &b.flipped)
-
+			nextState(b.width, b.height, b.threads, &b.world, &b.newWorld, &b.wg)
 			superMX.Lock()
 			// Overwrite old world
 			deepCopy(&b.world, &b.newWorld)
@@ -218,6 +214,7 @@ mainLoop:
 }
 
 func (b *Broker) Pause(req stubs.PauseData, res *stubs.PauseData) (err error) {
+	fmt.Println("PAUSE")
 	superMX.Lock()
 	if req.Value == 1 {
 		b.paused <- true
@@ -236,7 +233,7 @@ func (b *Broker) Quit(req stubs.PauseData, res *stubs.PauseData) (err error) {
 
 func (b *Broker) ShutDown(req stubs.PauseData, res *stubs.PauseData) (err error) {
 	b.quit <- true
-	closeWorkers(workerAddresses)
+	closeWorkers()
 	return
 }
 
@@ -244,7 +241,7 @@ func (b *Broker) ShutDown(req stubs.PauseData, res *stubs.PauseData) (err error)
 func (b *Broker) Subscribe(req stubs.Subscription, res *stubs.StatusReport) (err error) {
 	client, err := rpc.Dial("tcp", req.FactoryAddress)
 	if err == nil {
-		go subscriberLoop(client, req.Callback, b.jobs, &b.newWorld, &b.flipped, &b.wg)
+		go subscriberLoop(client, req.Callback, &b.newWorld, &b.wg)
 	} else {
 		fmt.Println("7", err)
 	}
