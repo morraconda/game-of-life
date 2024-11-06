@@ -9,14 +9,11 @@ import (
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
-type distributorChannels struct {
-	events     chan<- Event
-	ioCommand  chan<- ioCommand
-	ioIdle     <-chan bool
-	ioFilename chan<- string
-	ioOutput   chan<- uint8
-	ioInput    <-chan uint8
-}
+
+// to prevent deadlock, always attempt grab mutexes in this order
+var pauseMutex sync.Mutex
+var stateMutex sync.Mutex // for world and turncount
+var ioMutex sync.Mutex
 
 // get filename from params
 func getInputFilename(p Params) string {
@@ -28,24 +25,25 @@ func getOutputFilename(p Params, t int) string {
 }
 
 // gets initial 2D slice from input
-func getInitialWorld(input <-chan byte, p Params) [][]byte {
+func getInitialWorld(ip ioParams, p Params) [][]byte {
 	// initialise 2D slice of rows
 	world := make([][]byte, p.ImageHeight)
 	for i := 0; i < p.ImageHeight; i++ {
 		// initialise row, set the contents of the row accordingly
 		world[i] = make([]byte, p.ImageWidth)
 		for j := 0; j < p.ImageWidth; j++ {
-			world[i][j] = <-input
+			current = i * p.ImageWidth + j
+			world[i][j] = ip.input[current]
 		}
 	}
 	return world
 }
 
 // writes board state to output
-func writeToOutput(world [][]byte, turn int, p Params, outputChan chan<- byte) {
+func writeToOutput(world [][]byte, turn int, p Params, filename string, ip ioParams) {
 	for i := 0; i < p.ImageHeight; i++ {
 		for j := 0; j < p.ImageWidth; j++ {
-			outputChan <- world[i][j]
+			ip[i][j] = world[i][j]
 		}
 	}
 }
@@ -64,91 +62,78 @@ func getAliveCells(world [][]byte) []util.Cell {
 }
 
 // reports state every 2 seconds
-func reportState(turn *int, world *[][]byte, c chan<- Event, done <-chan bool, lock *sync.Mutex) {
-	for {
-		select {
-		case <-done:
-			return
-		case <-time.After(2 * time.Second):
-			lock.Lock()
-			alive := getAliveCells(*world)
-			c <- Event(AliveCellsCount{*turn, len(alive)})
-			lock.Unlock()
-		}
+func reportState(turn *int, world *[][]byte, c chan<- Event, quit *bool) {
+	for !*quit {
+		time.Sleep(2 * time.Second)
+		stateMutex.Lock()
+		alive := getAliveCells(*world)
+		c <- Event(AliveCellsCount{*turn, len(alive)})
+		stateMutex.Unlock()
 	}
 }
 
-func saveOutput(world [][]byte, turn int, p Params, c distributorChannels) {
-	// write to output
-	c.ioCommand <- ioCheckIdle
-	<-c.ioIdle
-	c.ioCommand <- ioOutput
-	filename := getOutputFilename(p, turn)
-	c.ioFilename <- filename
-
-	writeToOutput(world, turn, p, c.ioOutput)
+func saveOutput(world [][]byte, turn int, p Params, ip ioParams, events <-chan Event) {
+	stateMutex.Lock()
+	ioMutex.Lock()
+	ip.filename := getOutputFilename(p, turn)
+	writeToOutput(world, turn, p, c.ioOutput, filename)
 	fmt.Println("-- successfully wrote to output")
-	// close io
-	c.ioCommand <- ioCheckIdle
-	<-c.ioIdle
+	ioMutex.Unlock()
 	// send write event
 	fmt.Println("-- sending image event")
 	c.events <- ImageOutputComplete{turn, filename}
+	stateMutex.Unlock()
 }
 
-func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte, done <-chan bool,
-	quit chan<- bool, pauseChan chan<- bool, p Params, c distributorChannels, lock *sync.Mutex) {
+func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte, 
+	quit *bool, p Params, c distributorChannels) {
 	paused := false
-	for {
-		select {
-		case <-done:
-			return
+	for !*quit {
 		case key := <-keypresses:
 			switch key {
 			case sdl.K_s: // save
 				fmt.Println("-- s pressed")
-				lock.Lock()
-				//fmt.Println("locked mutex")
+				stateMutex.Lock()
 				saveOutput(*world, *turn, p, c)
-				lock.Unlock()
+				stateMutex.Unlock()
+
 			case sdl.K_q: // quit
 				fmt.Println("-- q pressed")
-				pauseChan <- false
-				quit <- true
+				if paused {
+					pauseMutex.Unlock()
+				}
+				*quit = true
+
 			case sdl.K_p: // pause
 				fmt.Println("-- p pressed")
-				lock.Lock()
+				stateMutex.Lock()
 				if paused {
 					fmt.Println("-- continuing")
 					c.events <- StateChange{*turn, Executing}
-					pauseChan <- false
+					paused = false
+					pauseMutex.Unlock()
 				} else {
+					pauseMutex.Lock()
 					fmt.Println("-- paused on Turn", *turn)
 					c.events <- StateChange{*turn, Paused}
-					pauseChan <- true
+					paused = true
 				}
-				lock.Unlock()
-				paused = !paused
+				stateMutex.Unlock()
+				paused = !paused		
 			}
-		}
 	}
 }
 
-// distributor executes all turns, sends work to broker
-func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
+// distributor executes all turns
+func distributor(p Params, ip ioParams, events chan<- Event, keypresses <-chan rune) {
 	// Get initial world
-	c.ioCommand <- ioInput
-	c.ioFilename <- getInputFilename(p)
+	ip.command <- ioInput
+	ip.filename <- getInputFilename(p)
 	world := getInitialWorld(c.ioInput, p)
 
-	// Channels for communicating with ticker and keypress handler
-	pauseChan := make(chan bool, 1)
-	finishedL := make(chan bool, 1)
-	finishedR := make(chan bool, 1)
-	quit := make(chan bool, 1)
+	quit := false
 	turn := 0
 	var wg sync.WaitGroup
-	var lock sync.Mutex
 
 	// get the initial alive cells and use them as input to CellsFlipped
 	initialFlippedCells := getAliveCells(world)
@@ -158,60 +143,35 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	// Start alive cells ticker and keypress handler
 	wg.Add(2)
 	go func() {
-		handleKeypress(keypresses, &turn, &world, finishedL, quit, pauseChan, p, c, &lock)
+		handleKeypress(keypresses, &turn, &world, &quit, p, c)
 		defer wg.Done()
 	}()
 	go func() {
-		reportState(&turn, &world, c.events, finishedR, &lock)
+		reportState(&turn, &world, c.events, &quit)
 		defer wg.Done()
 	}()
 
 	// Main game loop
-	done := false
-	for !done && turn < p.Turns {
-		select {
-		case <-quit:
-			fmt.Println("-- quitting")
-			done = true
-		case paused := <-pauseChan:
-			if paused {
-				<-pauseChan
-			}
-		default:
-			// advance to next state
-			newWorld, _ := simulateTurn(world, p)
-			lock.Lock()
-
-			//saveOutput(world, turn, p, c)
-			var flipped []util.Cell
-			for i := 0; i < p.ImageHeight; i++ {
-				for j := 0; j < p.ImageWidth; j++ {
-					if world[i][j] != newWorld[i][j] {
-						flipped = append(flipped, util.Cell{X: j, Y: i})
-					}
-				}
-			}
-			world = newWorld
-			c.events <- CellsFlipped{turn, flipped}
-			c.events <- TurnComplete{turn}
-			turn++
-			lock.Unlock()
-		}
+	for !quit && turn < p.Turns {
+		// give other goroutines priority to grab mutexes
+		time.Sleep(100 * time.Millisecond) 
+		pauseMutex.Lock()
+		// get next state
+		newWorld := simulateTurn(world, p)
+		// advane to next state
+		stateMutex.Lock()
+		flipped := getFlippedCells(world, newWorld)
+		c.events <- CellsFlipped{turn, flipped}
+		c.events <- TurnComplete{turn}
+		world = newWorld
+		turn++
+		pauseMutex.Unlock()
+		stateMutex.Unlock()
 	}
-
-	finishedL <- true
-	fmt.Println("-- hi")
-	finishedR <- true
-	fmt.Println("-- hii")
 
 	// Wait for goroutines to confirm closure
 	wg.Wait()
 	fmt.Println("-- hiiiii")
-
-	close(finishedL)
-	close(finishedR)
-	close(pauseChan)
-	close(quit)
 
 	// output final image
 	saveOutput(world, turn, p, c)
@@ -233,38 +193,26 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 }
 
 // Receive a board and slice it up into jobs
-func simulateTurn(world [][]byte, p Params) ([][]byte, []util.Cell) {
-
-	// initialise output channels
-	outChans := make([]chan [][]byte, p.Threads)
-	flippedChan := make(chan []util.Cell, p.Threads)
-	var newWorld [][]byte
-	var flipped []util.Cell
-
+func simulateTurn(world [][]byte, p Params) [][]byte {
+	// initialise next world
+	newWorld := make([][]byte, p.ImageHeight)
+	for i:=0; i < p.ImageHeight; i++ {
+		newWorld[i] = make([]byte, p.ImageWidth)
+	}
 	// distribution logic
 	incrementY := p.ImageHeight / p.Threads
 	startY := 0
 	for i := 0; i < p.Threads; i++ {
-		outChans[i] = make(chan [][]byte)
 		var endY int
 		if i == p.Threads-1 {
 			endY = p.ImageHeight
 		} else {
 			endY = incrementY + startY
 		}
-		go worker(world, outChans[i], flippedChan, startY, endY, p)
+		go worker(world, newWorld, startY, endY, p)
 		startY += incrementY
 	}
-
-	// piece together new output
-	for i := 0; i < p.Threads; i++ {
-		result := <-outChans[i]
-		close(outChans[i])
-		newWorld = append(newWorld, result...)
-		flipped = append(flipped, <-flippedChan...)
-	}
-	close(flippedChan)
-	return newWorld, flipped
+	return newWorld
 }
 
 // returns in-bounds version of a cell if out of bounds
@@ -323,33 +271,34 @@ func getNextCell(cell util.Cell, world [][]byte, width int, height int) byte {
 	}
 }
 
-type Compute struct{}
+func getFlippedCells(oldWorld [][]byte, newWorld [][]byte) []util.Cell {
+	var flipped []util.Cell
+	for i := 0; i < p.ImageHeight; i++ {
+		for j := 0; j < p.ImageWidth; j++ {
+			if world[i][j] != newWorld[i][j] {
+				flipped = append(flipped, util.Cell{X: j, Y: i})
+			}
+		}
+	}
+	return flipped
+}
 
-func worker(world [][]byte, outChan chan<- [][]byte, flippedChan chan<- []util.Cell,
-	startY int, endY int, p Params) {
+// no mutexes should be required here as each cell should only be written to by 
+// one worker
+func worker(world [][]byte, newWorld [][]byte, startY int, endY int, p Params) {
 	// initialise 2D slice of rows
 	width := p.ImageWidth
 	height := p.ImageHeight
-
-	newWorld := make([][]byte, endY-startY)
-	var flipped []util.Cell
 	for i := startY; i < endY; i++ {
 		// initialise row, set the contents of the row accordingly
 		newWorld[i-startY] = make([]byte, width)
 		for j := 0; j < width; j++ {
 			// check for flipped cells
 			cell := util.Cell{X: j, Y: i}
-			old := newWorld[i-startY][j]
 			next := getNextCell(cell, world, width, height)
-			if old != next {
-				flipped = append(flipped, cell)
-			}
 			newWorld[i-startY][j] = next
 		}
 	}
-
-	outChan <- newWorld
-	flippedChan <- flipped
 }
 
 type Request struct {

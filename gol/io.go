@@ -9,18 +9,18 @@ import (
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
-type ioChannels struct {
-	command  <-chan ioCommand
-	idle     chan<- bool
-	filename <-chan string
-	output   <-chan uint8
-	input    chan<- uint8
+type ioParams struct {
+	command  ioCommand
+	idle     bool
+	filename string
+	output   [][]uint8
+	input    []uint8
 }
 
 // ioState is the internal ioState of the io goroutine.
 type ioState struct {
 	params   Params
-	channels ioChannels
+	channels ioParams
 }
 
 // ioCommand allows requesting behaviour from the io (pgm) goroutine.
@@ -36,14 +36,13 @@ const (
 	ioOutput ioCommand = iota
 	ioInput
 	ioCheckIdle
+
 )
 
 // writePgmImage receives an array of bytes and writes it to a pgm file.
 func (io *ioState) writePgmImage() {
 	_ = os.Mkdir("out", os.ModePerm)
-
-	// Request a filename from the distributor.
-	filename := <-io.channels.filename
+	filename := io.channels.filename
 
 	file, ioError := os.Create("out/" + filename + ".pgm")
 	util.Check(ioError)
@@ -65,11 +64,7 @@ func (io *ioState) writePgmImage() {
 
 	for y := 0; y < io.params.ImageHeight; y++ {
 		for x := 0; x < io.params.ImageWidth; x++ {
-			val := <-io.channels.output
-			//if val != 0 {
-			//	fmt.Println(x, y)
-			//}
-			world[y][x] = val
+			world[y][x] = io.channels.output[y][x]
 		}
 	}
 
@@ -87,10 +82,7 @@ func (io *ioState) writePgmImage() {
 }
 
 // readPgmImage opens a pgm file and sends its data as an array of bytes.
-func (io *ioState) readPgmImage() {
-
-	// Request a filename from the distributor.
-	filename := <-io.channels.filename
+func (io *ioState) readPgmImage(filename string) {
 
 	data, ioError := os.ReadFile("images/" + filename + ".pgm")
 	util.Check(ioError)
@@ -119,14 +111,14 @@ func (io *ioState) readPgmImage() {
 	image := []byte(fields[4])
 
 	for _, b := range image {
-		io.channels.input <- b
+		io.channels.input = append(io.channels.input, b)
 	}
 
 	fmt.Println("File", filename, "input done!")
 }
 
 // startIo should be the entrypoint of the io goroutine.
-func startIo(p Params, c ioChannels) {
+func startIo(p Params, c ioParams) {
 	io := ioState{
 		params:   p,
 		channels: c,
