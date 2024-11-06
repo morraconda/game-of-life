@@ -13,36 +13,25 @@ import (
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
-// Public variables
-var workerCount int
-var workerAddresses []*exec.Cmd
-var workerAddressStrings []string
-var height int
-var width int
-var threads int
-var jobs = make(chan stubs.Request, 64)
+//TODO: optimise mutex locks to reduce waiting time (ie: separate superMX into a few independent locks)
+var superMX sync.RWMutex
 var jobsMX sync.RWMutex
-var world [][]byte
-var worldMX sync.RWMutex
-var newWorld [][]byte
-var newWorldMX sync.RWMutex
-var flipped []util.Cell
-var flippedMX sync.RWMutex
-var wg sync.WaitGroup
 var wgMX sync.RWMutex
 var pAddr *string
+var workerAddresses []*exec.Cmd
+var workerAddressStrings []string
+var workerCount int
+var jobs = make(chan stubs.Request, 64)
 
-//manage neighbor assignments and provide this information to each worker.
-// Deep copy one array into another
+// Helper: deep copy one array into another
 func deepCopy(output *[][]byte, original *[][]byte) {
 	for i := 0; i < len(*original); i++ {
-		(*output)[i] = (*original)[i]
+		copy((*output)[i], (*original)[i])
 	}
 }
 
 // Spawn a new worker, this worker will dial itself into the broker
 func spawnWorkers() {
-
 	// Allocate a random free address
 	listener, err := net.Listen("tcp", ":0")
 	if err != nil {
@@ -62,15 +51,28 @@ func spawnWorkers() {
 	}
 }
 
+func closeWorkers() {
+	for _, worker := range workerAddresses {
+		err := worker.Process.Kill()
+		if err != nil {
+			fmt.Println("Error closing worker: ", err)
+		}
+	}
+	os.Exit(0)
+	return
+}
+
 // Receive a board and slice it up into jobs
-func publish() {
+func publish(width int, height int, threads int, world *[][]byte, wg *sync.WaitGroup) {
 	splitRequest := new(stubs.Request)
-	worldMX.Lock()
-	splitRequest.World, splitRequest.Width, splitRequest.Height = world, width, height
-	worldMX.Unlock()
+	superMX.Lock()
+	splitRequest.World = *world
+	splitRequest.Width, splitRequest.Height = width, height
+	superMX.Unlock()
 	incrementY := height / threads
 	startY := 0
-
+	jobsMX.Lock()
+	wgMX.Lock()
 	for i := 0; i < threads; i++ {
 		splitRequest.StartY = startY
 		if i == threads-1 {
@@ -79,116 +81,171 @@ func publish() {
 			splitRequest.EndY = incrementY + startY
 		}
 		startY += incrementY
-		jobsMX.Lock()
-		wgMX.Lock()
 
 		//pass the addresses of neighbours to the top and bottom of the split request
-		splitRequest.TopNeighbor = workerAddressStrings[i-1]
-		if i == 0 {
-			continue
+		if i > 0 {
+			splitRequest.TopNeighbor = workerAddressStrings[i-1]
 		}
-		splitRequest.BottomNeighbor = workerAddressStrings[i-1]
-		if i == threads-1 {
-			continue
-		} //CHECK THIS
+		if i < threads-1 {
+			splitRequest.BottomNeighbor = workerAddressStrings[i+1]
+		}
+
+		if i < 0 || i >= threads-1 {
+			fmt.Println("Error out of bounds")
+		}
 
 		jobs <- *splitRequest
 		wg.Add(1)
-		jobsMX.Unlock()
-		wgMX.Unlock()
 	}
+	wgMX.Unlock()
+	jobsMX.Unlock()
 }
 
 // Routine ran once per server instance, takes jobs from the queue and sends them to the server
-func subscriberLoop(client *rpc.Client, callback string) {
+func subscriberLoop(client *rpc.Client, callback string, newWorld *[][]byte, wg *sync.WaitGroup) {
 	for {
 		//Take a job from the job queue
+		//jobsMX.Lock()
 		job := <-jobs
+		//jobsMX.Unlock()
 		response := new(stubs.Response) // Empty response
 		err := client.Call(callback, job, response)
 		if err != nil {
+
 			panic(err)
 		}
-
 		//Append the results to the new state
-		newWorldMX.Lock()
+		superMX.Lock()
 		for i := 0; i < len(response.World); i++ {
-
-			newWorld[job.StartY+i] = response.World[i]
-
+			(*newWorld)[job.StartY+i] = response.World[i]
 		}
-		newWorldMX.Unlock()
-		flippedMX.Lock()
-		for i := 0; i < len(response.Flipped); i++ {
-
-			flipped = append(flipped, response.Flipped[i])
-		}
-		flippedMX.Unlock()
+		//for i := 0; i < len(response.Flipped); i++ {
+		//	*flipped = append(*flipped, response.Flipped[i])
+		//}
+		superMX.Unlock()
 		wgMX.Lock()
 		wg.Done()
 		wgMX.Unlock()
 	}
 }
 
-type Broker struct{}
+// get list of alive cells from a world
+func getAliveCells(world [][]byte) []util.Cell {
+	var alive []util.Cell
+	for i := 0; i < len(world); i++ {
+		for j := 0; j < len(world[i]); j++ {
+			if world[i][j] == 255 {
+				alive = append(alive, util.Cell{X: j, Y: i})
+			}
+		}
+	}
+	return alive
+}
 
-// NextState Called by distributor to increment the game by one step
-func (b *Broker) NextState(req stubs.StatusReport, res *stubs.Update) (err error) {
-	publish()
+// increment game loop by one step
+func nextState(width int, height int, threads int, world *[][]byte, newWorld *[][]byte, wg *sync.WaitGroup) {
+	publish(width, height, threads, world, wg)
 	// Wait until all jobs have been processed
 	wg.Wait()
-	worldMX.Lock()
-	newWorldMX.Lock()
-	flippedMX.Lock()
-	deepCopy(&world, &newWorld)
-	res.World = newWorld
-	res.Flipped = flipped
-	flipped = nil
-	flippedMX.Unlock()
-	newWorldMX.Unlock()
-	worldMX.Unlock()
+	superMX.Lock()
+	deepCopy(world, newWorld)
+	superMX.Unlock()
 	return
 }
 
-// Start Called by distributor to load initial values
-func (b *Broker) Start(input stubs.Input, res *stubs.StatusReport) (err error) {
-	height = input.Height
-	width = input.Width
-	world = input.World
-	threads = input.Threads
-	newWorld = make([][]byte, height)
-	for i := range newWorld {
-		newWorld[i] = make([]byte, width)
+type Broker struct {
+	// Configuration Variables
+	height  int
+	width   int
+	turns   int
+	threads int
+
+	// Worker and Job Management
+	distributor *rpc.Client
+	wg          sync.WaitGroup
+
+	// State Variables
+	world    [][]byte
+	newWorld [][]byte
+	oldWorld [][]byte
+	paused   chan bool
+	quit     chan bool
+	turn     int
+}
+
+func (b *Broker) Init(input stubs.Input, res *stubs.StatusReport) (err error) {
+	// Transfer and initialise variables
+	b.quit = make(chan bool)
+	b.paused = make(chan bool)
+	superMX.Lock()
+	b.height = input.Height
+	b.width = input.Width
+	b.world = input.World
+	b.threads = input.Threads
+	b.turns = input.Turns
+	b.newWorld = make([][]byte, b.height)
+	b.oldWorld = make([][]byte, b.height)
+	b.turn = 0
+	for i := range b.newWorld {
+		b.newWorld[i] = make([]byte, b.width)
+		b.oldWorld[i] = make([]byte, b.width)
 	}
+	superMX.Unlock()
+
 	// If there are not enough workers currently available, spawn more
-	if threads > workerCount {
-		for i := 0; i < threads-workerCount; i++ {
+	if b.threads > workerCount {
+		for i := 0; i < b.threads-workerCount; i++ {
 			spawnWorkers()
 		}
 	}
-	return
+	return err
 }
 
-func (b *Broker) Close(req stubs.StatusReport, res *stubs.StatusReport) (err error) {
-	for _, worker := range workerAddresses {
-		err := worker.Process.Kill()
-		if err != nil {
-			fmt.Println("Error: ", err)
+// Start Called by distributor
+func (b *Broker) Start(req stubs.StatusReport, res *stubs.StatusReport) (err error) {
+	// Main game loop
+mainLoop:
+	for b.turn < b.turns {
+		select {
+		case pause := <-b.paused:
+			// Halt loop and wait until pause is set to false
+			for pause {
+				pause = <-b.paused
+			}
+		case <-b.quit:
+			// Exit
+			break mainLoop
+		default:
+			// Increment state
+			nextState(b.width, b.height, b.threads, &b.world, &b.newWorld, &b.wg)
+			superMX.Lock()
+			// Overwrite old world
+			deepCopy(&b.world, &b.newWorld)
+			b.turn++
+			superMX.Unlock()
 		}
 	}
-	os.Exit(0)
+	return err
+}
+
+func (b *Broker) Pause(req stubs.PauseData, res *stubs.PauseData) (err error) {
+	if req.Value == 1 {
+		b.paused <- true
+	} else if req.Value == 0 {
+		b.paused <- false
+	}
+	res.Value = b.turn
 	return
 }
 
-// Finish Called by distributor to return final world
-func (b *Broker) Finish(req stubs.StatusReport, res *stubs.Update) (err error) {
-	worldMX.Lock()
-	res.World = make([][]byte, len(world))
-	for i := range res.World {
-		res.World[i] = make([]byte, len(world[i]))
-	}
-	deepCopy(&res.World, &world)
-	worldMX.Unlock()
+func (b *Broker) Quit(req stubs.PauseData, res *stubs.PauseData) (err error) {
+	b.quit <- true
+	return
+}
+
+func (b *Broker) ShutDown(req stubs.PauseData, res *stubs.PauseData) (err error) {
+	b.quit <- true
+	closeWorkers()
 	return
 }
 
@@ -196,11 +253,34 @@ func (b *Broker) Finish(req stubs.StatusReport, res *stubs.Update) (err error) {
 func (b *Broker) Subscribe(req stubs.Subscription, res *stubs.StatusReport) (err error) {
 	client, err := rpc.Dial("tcp", req.FactoryAddress)
 	if err == nil {
-		go subscriberLoop(client, req.Callback)
+		go subscriberLoop(client, req.Callback, &b.newWorld, &b.wg)
 	} else {
-		fmt.Println("Error subscribing: ", err)
+		fmt.Println("Lost connection with spawned worker, spawning another: ", err)
+		spawnWorkers()
 	}
 	return
+}
+
+func (b *Broker) GetState(req stubs.StatusReport, res *stubs.Update) (err error) {
+	superMX.Lock()
+	res.World = make([][]byte, b.height)
+	for i := range res.World {
+		res.World[i] = make([]byte, b.width)
+	}
+	deepCopy(&res.World, &b.world)
+	res.World = b.world
+	res.Turn = b.turn
+	res.AliveCells = getAliveCells(b.world)
+	for i := 0; i < len(b.world); i++ {
+		for j := 0; j < len(b.world[i]); j++ {
+			if b.world[i][j] != b.oldWorld[i][j] {
+				res.Flipped = append(res.Flipped, util.Cell{X: j, Y: i})
+			}
+		}
+	}
+	deepCopy(&b.oldWorld, &b.world)
+	superMX.Unlock()
+	return err
 }
 
 func main() {
@@ -208,7 +288,7 @@ func main() {
 	flag.Parse()
 	err := rpc.Register(&Broker{})
 	if err != nil {
-		fmt.Println("Error: ", err)
+		fmt.Println("Failed to register RPC methods: ", err)
 	}
 	listener, err := net.Listen("tcp", ":"+*pAddr)
 	if err != nil {
@@ -218,6 +298,8 @@ func main() {
 			fmt.Printf("Error: no ports available")
 		}
 	}
+	//potentially tweak the above by iterating through all possible ports around the target port
+	//rather than binding to a random one?
 
 	defer listener.Close()
 	rpc.Accept(listener)
