@@ -13,6 +13,7 @@ import (
 )
 
 var listener net.Listener
+var f *os.File
 
 // returns in-bounds version of a cell if out of bounds
 func wrap(cell util.Cell, width int, height int) util.Cell {
@@ -45,7 +46,7 @@ func getAdjacentCells(cell util.Cell, width int, height int) []util.Cell {
 	return adjacent
 }
 
-// return how many cells in a list are black/alive
+// return how many cells in a list are black
 func countAdjacentCells(current util.Cell, world [][]byte, width int, height int) int {
 	count := 0
 	cells := getAdjacentCells(current, width, height)
@@ -70,13 +71,10 @@ func getNextCell(cell util.Cell, world [][]byte, width int, height int) byte {
 	}
 }
 
-////look at the logic for the border overlap (also found in median filter
-////and try to transfer data for the halo regions needed
-
 ////sending rows to neighbour via rpc address dialing
 func sendTopRow(topRow []byte, neighborAddr string) error {
 	var haloRes stubs.HaloResponse
-	client, err := rpc.Dial("tcp", neighborAddr) //dial the address of the neighbour
+	client, err := rpc.Dial("tcp", neighborAddr)
 	if err != nil {
 		fmt.Println("Error sending row", err)
 	}
@@ -87,7 +85,7 @@ func sendTopRow(topRow []byte, neighborAddr string) error {
 
 func sendBottomRow(bottomRow []byte, neighborAddr string) error {
 	var haloRes stubs.HaloResponse
-	client, err := rpc.Dial("tcp", neighborAddr) //dial the address of the neighbour
+	client, err := rpc.Dial("tcp", neighborAddr)
 	if err != nil {
 		fmt.Println("Error sending row", err)
 	}
@@ -102,7 +100,7 @@ type Compute struct {
 	wg        sync.WaitGroup
 }
 
-// GetTopRow get the top row from a neighbour
+//functions for getting the halo region top and bottom rows from the halo request
 func (s *Compute) GetTopRow(haloReq stubs.HaloRequest, haloRes stubs.HaloResponse) {
 	s.topRow = haloReq.Row
 	haloRes.Received = true
@@ -119,7 +117,6 @@ func (s *Compute) GetBottomRow(haloReq stubs.HaloRequest, haloRes stubs.HaloResp
 }
 
 func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) (err error) {
-	//Halo exchange first
 	topRow := req.World[req.StartY]
 	bottomRow := req.World[req.EndY-1]
 
@@ -128,9 +125,12 @@ func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) (err erro
 	go sendBottomRow(bottomRow, req.BottomNeighbor)
 	s.wg.Wait()
 
+	//some logic to process the entire state change after appending halo regions
+
+	// initialise 2D slice of rows
+	log.Printf("Job processing")
 	newWorld := make([][]byte, req.EndY-req.StartY)
 	var flipped []util.Cell
-
 	for i := req.StartY; i < req.EndY; i++ {
 		// initialise row, set the contents of the row accordingly
 		newWorld[i-req.StartY] = make([]byte, req.Width)
@@ -148,11 +148,13 @@ func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) (err erro
 
 	res.World = newWorld
 	res.Flipped = flipped
+	log.Printf("Job processed")
 	return
 }
 
 func main() {
-	f, err := os.OpenFile("testlogfile", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	err := *new(error)
+	f, err = os.OpenFile("testlogfile", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
 		log.Fatalf("error opening log: %v", err)
 	}
@@ -190,5 +192,4 @@ func main() {
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 	wg.Wait()
-
 }
