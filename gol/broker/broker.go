@@ -335,6 +335,7 @@ func (b *Broker) Subscribe(req stubs.Subscription, res *stubs.StatusReport) (err
 // HandleKey called by distributor to forward keypresses
 func (b *Broker) HandleKey(req stubs.KeyPress, res *stubs.StatusReport) (err error) {
 	placeHolder := new(stubs.StatusReport)
+	res.Message = strconv.Itoa(b.turn)
 	if req.Key == "s" {
 		// do nothing for now
 		if !req.Paused {
@@ -358,6 +359,7 @@ func (b *Broker) HandleKey(req stubs.KeyPress, res *stubs.StatusReport) (err err
 		if err != nil {
 			fmt.Println("9", err)
 		}
+		b.turn++
 		superMX.Unlock()
 		time.Sleep(100 * time.Millisecond)
 		b.quit <- true
@@ -392,7 +394,6 @@ func (b *Broker) HandleKey(req stubs.KeyPress, res *stubs.StatusReport) (err err
 			b.paused <- false
 		} else {
 			superMX.Lock()
-			res.Message = strconv.Itoa(b.turn)
 			err = b.distributor.Call(b.callback, stubs.Event{Type: "StateChange", Turn: b.turn, State: "Paused"}, &placeHolder)
 			if err != nil {
 				fmt.Println("13", err)
@@ -401,7 +402,7 @@ func (b *Broker) HandleKey(req stubs.KeyPress, res *stubs.StatusReport) (err err
 			b.paused <- true
 		}
 	}
-	return
+	return err
 }
 
 func main() {

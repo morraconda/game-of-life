@@ -70,7 +70,7 @@ func writeToOutput(world [][]byte, turn int, p Params, outputChan chan<- byte) {
 	}
 }
 
-func saveOutput(client *rpc.Client, p Params, c distributorChannels) (world [][]byte) {
+func saveOutput(client *rpc.Client, p Params, c distributorChannels, quitting bool) (world [][]byte) {
 	fmt.Println("SAVING")
 	output := new(stubs.Update)
 	status := new(stubs.StatusReport)
@@ -78,6 +78,9 @@ func saveOutput(client *rpc.Client, p Params, c distributorChannels) (world [][]
 	err := client.Call(stubs.Finish, status, &output)
 	if err != nil {
 		fmt.Println("Error: ", err)
+	}
+	if quitting {
+		output.Turn = output.Turn + 1
 	}
 	// write to output
 	c.ioCommand <- ioCheckIdle
@@ -96,7 +99,6 @@ func saveOutput(client *rpc.Client, p Params, c distributorChannels) (world [][]
 // forwards key presses to broker for handling
 func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 	quit chan<- bool, p Params, c distributorChannels, client *rpc.Client, wg *sync.WaitGroup) {
-	//time.Sleep(1 * time.Second)
 	req := new(stubs.KeyPress)
 	req.Paused = false
 	res := new(stubs.StatusReport)
@@ -107,6 +109,7 @@ func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 			wg.Done()
 			return
 		case key := <-keypresses:
+			fmt.Println("KEY")
 			switch key {
 			case sdl.K_s: // save
 				req.Key = "s"
@@ -114,22 +117,28 @@ func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 				if err != nil {
 					panic(err)
 				}
-				saveOutput(client, p, c)
+				saveOutput(client, p, c, false)
 			case sdl.K_q: // quit
 				req.Key = "q"
+				saveOutput(client, p, c, true)
 				err := client.Call(stubs.HandleKey, req, &res)
 				if err != nil {
 					panic(err)
 				}
-				saveOutput(client, p, c)
+				fmt.Println("QUIT")
+				wg.Done()
+				quit <- true
+				return
 			case sdl.K_k: // shutdown
 				req.Key = "k"
+				saveOutput(client, p, c, true)
 				err := client.Call(stubs.HandleKey, req, &res)
 				if err != nil {
 					panic(err)
 				}
-				saveOutput(client, p, c)
-				// add save
+				wg.Done()
+				quit <- true
+				return
 			case sdl.K_p: // pause
 				req.Paused = paused
 				if paused {
@@ -240,7 +249,8 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	select {
 	case <-quit:
 	case <-call.Done:
-		saveOutput(client, p, c)
+
+		saveOutput(client, p, c, false)
 	}
 	fmt.Println("Exited loop")
 
