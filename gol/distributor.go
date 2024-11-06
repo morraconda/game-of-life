@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"github.com/veandco/go-sdl2/sdl"
 	"log"
-	"net"
 	"net/rpc"
 	"sync"
+	"time"
 	"uk.ac.bris.cs/gameoflife/gol/stubs"
 	"uk.ac.bris.cs/gameoflife/util"
 )
@@ -70,17 +70,13 @@ func writeToOutput(world [][]byte, turn int, p Params, outputChan chan<- byte) {
 	}
 }
 
-func saveOutput(client *rpc.Client, p Params, c distributorChannels, quitting bool) (world [][]byte) {
-	fmt.Println("SAVING")
+func saveOutput(client *rpc.Client, p Params, c distributorChannels) (world [][]byte) {
 	output := new(stubs.Update)
 	status := new(stubs.StatusReport)
 	// get most recent output from broker
-	err := client.Call(stubs.Finish, status, &output)
+	err := client.Call(stubs.GetState, status, &output)
 	if err != nil {
-		fmt.Println("Error: ", err)
-	}
-	if quitting {
-		output.Turn = output.Turn + 1
+		fmt.Println("Error calling Finish: ", err)
 	}
 	// write to output
 	c.ioCommand <- ioCheckIdle
@@ -96,12 +92,34 @@ func saveOutput(client *rpc.Client, p Params, c distributorChannels, quitting bo
 	return output.World
 }
 
+// Ran synchronously, reports state to distributor every 2 seconds
+func reportState(finished <-chan bool, wg *sync.WaitGroup, client *rpc.Client, c distributorChannels) {
+	for {
+		select {
+		case <-finished:
+			wg.Done()
+			return
+		case <-time.After(2 * time.Second):
+			req := new(stubs.StatusReport)
+			res := new(stubs.Update)
+			err := client.Call(stubs.GetState, req, &res)
+			if err != nil {
+				fmt.Println("Error calling GetState in reportState: ", err)
+				wg.Done()
+				return
+			}
+
+			c.events <- CellsFlipped{res.Turn, res.Flipped}
+			c.events <- AliveCellsCount{res.Turn, len(res.AliveCells)}
+			c.events <- TurnComplete{res.Turn}
+
+		}
+	}
+}
+
 // forwards key presses to broker for handling
 func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 	quit chan<- bool, p Params, c distributorChannels, client *rpc.Client, wg *sync.WaitGroup) {
-	req := new(stubs.KeyPress)
-	req.Paused = false
-	res := new(stubs.StatusReport)
 	paused := false
 	for {
 		select {
@@ -109,108 +127,95 @@ func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 			wg.Done()
 			return
 		case key := <-keypresses:
-			fmt.Println("KEY")
+			req := new(stubs.PauseData)
+			res := new(stubs.PauseData)
 			switch key {
 			case sdl.K_s: // save
-				req.Key = "s"
-				err := client.Call(stubs.HandleKey, req, &res)
-				if err != nil {
-					panic(err)
+				if !paused {
+					req.Value = 1
+					err := client.Call(stubs.Pause, req, &res)
+					if err != nil {
+						fmt.Println("Error pausing in save: ", err)
+					}
 				}
-				saveOutput(client, p, c, false)
+				saveOutput(client, p, c)
+				if !paused {
+					req.Value = 0
+					err := client.Call(stubs.Pause, req, &res)
+					if err != nil {
+						fmt.Println("Error un-pausing in save: ", err)
+					}
+				}
 			case sdl.K_q: // quit
-				req.Key = "q"
-				saveOutput(client, p, c, true)
-				err := client.Call(stubs.HandleKey, req, &res)
-				if err != nil {
-					panic(err)
+				if !paused {
+					req.Value = 1
+					err := client.Call(stubs.Pause, req, &res)
+					if err != nil {
+						fmt.Println("Error pausing in quit: ", err)
+					}
 				}
-				fmt.Println("QUIT")
-				wg.Done()
-				quit <- true
-				return
+				saveOutput(client, p, c)
+				//c.events <- FinalTurnComplete{res.Value}
+				req.Value = 0
+				err := client.Call(stubs.Pause, req, &res)
+				if err != nil {
+					fmt.Println("Error un-pausing in quit: ", err)
+				}
+				err = client.Call(stubs.Quit, req, &res)
+				if err != nil {
+					fmt.Println("Error quitting in quit: ", err)
+				}
 			case sdl.K_k: // shutdown
-				req.Key = "k"
-				saveOutput(client, p, c, true)
-				err := client.Call(stubs.HandleKey, req, &res)
-				if err != nil {
-					panic(err)
+				if !paused {
+					req.Value = 1
+					err := client.Call(stubs.Pause, req, &res)
+					if err != nil {
+						fmt.Println("Error pausing in shutdown: ", err)
+					}
 				}
-				wg.Done()
-				quit <- true
-				return
+				saveOutput(client, p, c)
+				//c.events <- FinalTurnComplete{res.Value}
+				req.Value = 0
+				err := client.Call(stubs.Pause, req, &res)
+				if err != nil {
+					fmt.Println("Error un-pausing in quit: ", err)
+				}
+				err = client.Call(stubs.Quit, req, &res)
+				if err != nil {
+					fmt.Println("Error quitting in shutdown: ", err)
+				}
+				err = client.Call(stubs.ShutDown, req, &res)
+				if err != nil {
+					fmt.Println("Error shutting down in shutdown: ", err)
+				}
 			case sdl.K_p: // pause
-				req.Paused = paused
 				if paused {
 					paused = false
-					req.Key = "p"
-					err := client.Call(stubs.HandleKey, req, &res)
+					req.Value = 0
+					err := client.Call(stubs.Pause, req, &res)
 					if err != nil {
-						panic(err)
+						fmt.Println("Error un-pausing in pause: ", err)
 					}
+					fmt.Println("continuing")
+					c.events <- StateChange{res.Value, Executing}
 				} else {
 					paused = true
-					req.Key = "p"
-					err := client.Call(stubs.HandleKey, req, &res)
+					req.Value = 1
+					err := client.Call(stubs.Pause, req, &res)
 					if err != nil {
-						panic(err)
+						fmt.Println("Error pausing in pause: ", err)
 					}
-					fmt.Println(res.Message)
+					fmt.Println(res.Value)
+					c.events <- StateChange{res.Value, Paused}
+
 				}
 			}
 		}
 	}
-}
-
-type Control struct{}
-
-// Event forwards events from the broker to SDL
-func (b *Control) Event(req stubs.Event, res *stubs.StatusReport) (err error) {
-	if req.Type == "StateChange" {
-		if req.State == "Executing" {
-			channel.events <- StateChange{req.Turn, Executing}
-		} else if req.State == "Paused" {
-			channel.events <- StateChange{req.Turn, Paused}
-		} else if req.State == "Quitting" {
-			channel.events <- StateChange{req.Turn, Executing}
-		}
-	} else if req.Type == "CellsFlipped" {
-		channel.events <- CellsFlipped{req.Turn, req.Cells}
-	} else if req.Type == "AliveCellsCount" {
-		channel.events <- AliveCellsCount{req.Turn, req.Count}
-	} else if req.Type == "TurnComplete" {
-		channel.events <- TurnComplete{req.Turn}
-	} else if req.Type == "FinalTurnComplete" {
-		channel.events <- FinalTurnComplete{req.Turn, req.Cells}
-	} else {
-		fmt.Println("Error: unknown event type")
-	}
-	return
 }
 
 // distributor executes all turns, sends work to broker
 func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
-
-	// Perform server init if first time running
-	once.Do(func() {
-		flag.Parse()
-		// Register own public functions
-		err := rpc.Register(&Control{})
-		if err != nil {
-			log.Fatalf("Failed to register Compute service: %v", err)
-		}
-
-		//Start listener
-		go func() {
-			listener, err := net.Listen("tcp", *pAddr)
-			if err != nil {
-				log.Fatalf("Failed to listen on %s: %v", *pAddr, err)
-			}
-			defer listener.Close()
-			rpc.Accept(listener)
-		}()
-	})
-
 	//Dial the broker
 	client, err := rpc.Dial("tcp", *brokerAddr)
 	if err != nil {
@@ -234,34 +239,60 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	input.Address = *pAddr
 	input.Turns = p.Turns
 
-	// Start goroutines
-	wg := sync.WaitGroup{}
-	wg.Add(1)
-	quit := make(chan bool, 1)
-	finished := make(chan bool, 1)
-
+	// Initialise broker
 	err = client.Call(stubs.Init, input, &status)
 	if err != nil {
+		fmt.Println("Error initialising in quit: ", err)
 	}
-	go handleKeypress(keypresses, finished, quit, p, c, client, &wg)
-	// Run broker, block until it has finished
+
+	// Start goroutines
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+	quit := make(chan bool, 1)
+	finishedR := make(chan bool, 1)
+	finishedL := make(chan bool, 1)
+	go handleKeypress(keypresses, finishedR, quit, p, c, client, &wg)
+	go reportState(finishedL, &wg, client, c)
+
+	// Send initial events
+	req := new(stubs.StatusReport)
+	res := new(stubs.Update)
+	err = client.Call(stubs.GetState, req, &res)
+	if err != nil {
+		fmt.Println("Error getting initial state: ", err)
+	}
+	c.events <- CellsFlipped{0, res.Flipped}
+	c.events <- StateChange{0, Executing}
+
+	// Run main loop in broker, block until it has finished
 	call := client.Go(stubs.Start, status, &status, nil)
 	select {
 	case <-quit:
 	case <-call.Done:
-
-		saveOutput(client, p, c, false)
+		saveOutput(client, p, c)
 	}
-	fmt.Println("Exited loop")
 
-	// Tell keyhandler to close and wait until it does
-	finished <- true
+	// Signal goroutines to close
+	finishedR <- true
+	finishedL <- true
+
+	// Send final events
+	req = new(stubs.StatusReport)
+	res = new(stubs.Update)
+	err = client.Call(stubs.GetState, req, &res)
+	if err != nil {
+		fmt.Println("Error getting final state: ", err)
+	}
+	c.events <- FinalTurnComplete{res.Turn, res.AliveCells}
+	c.events <- StateChange{res.Turn, Quitting}
+
+	// Wait until goroutines have closed
 	wg.Wait()
 
 	// Close client
 	err = client.Close()
 	if err != nil {
-		fmt.Println("Error: ", err)
+		fmt.Println("Error closing connection: ", err)
 	}
 
 	// Make sure that the Io has finished any output before exiting.

@@ -7,14 +7,10 @@ import (
 var Subscribe = "Broker.Subscribe"
 var Start = "Broker.Start"
 var Init = "Broker.Init"
-var Finish = "Broker.Finish"
-var Close = "Broker.Close"
-var HandleKey = "Broker.HandleKey"
-
-type KeyPress struct {
-	Key    string
-	Paused bool
-}
+var GetState = "Broker.GetState"
+var Pause = "Broker.Pause"
+var Quit = "Broker.Quit"
+var ShutDown = "Broker.ShutDown"
 
 type Input struct {
 	World    [][]byte
@@ -48,14 +44,19 @@ type Response struct {
 }
 
 type Update struct {
-	Flipped []util.Cell
-	World   [][]byte
-	Turn    int
+	Flipped    []util.Cell
+	World      [][]byte
+	Turn       int
+	AliveCells []util.Cell
 }
 
 type Subscription struct {
 	FactoryAddress string
 	Callback       string
+}
+
+type PauseData struct {
+	Value int
 }
 
 type StatusReport struct {
