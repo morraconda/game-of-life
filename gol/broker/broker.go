@@ -53,7 +53,7 @@ func closeWorkers() {
 	for _, worker := range workerAddresses {
 		err := worker.Process.Kill()
 		if err != nil {
-			fmt.Println("1 ", err)
+			fmt.Println("Error closing worker: ", err)
 		}
 	}
 	os.Exit(0)
@@ -162,6 +162,7 @@ type Broker struct {
 func (b *Broker) Init(input stubs.Input, res *stubs.StatusReport) (err error) {
 	// Transfer and initialise variables
 	b.quit = make(chan bool)
+	b.paused = make(chan bool)
 	superMX.Lock()
 	b.height = input.Height
 	b.width = input.Width
@@ -214,15 +215,12 @@ mainLoop:
 }
 
 func (b *Broker) Pause(req stubs.PauseData, res *stubs.PauseData) (err error) {
-	fmt.Println("PAUSE")
-	superMX.Lock()
 	if req.Value == 1 {
 		b.paused <- true
 	} else if req.Value == 0 {
 		b.paused <- false
 	}
 	res.Value = b.turn
-	superMX.Unlock()
 	return
 }
 
@@ -243,7 +241,8 @@ func (b *Broker) Subscribe(req stubs.Subscription, res *stubs.StatusReport) (err
 	if err == nil {
 		go subscriberLoop(client, req.Callback, &b.newWorld, &b.wg)
 	} else {
-		fmt.Println("7", err)
+		fmt.Println("Lost connection with spawned worker, spawning another: ", err)
+		spawnWorkers()
 	}
 	return
 }
@@ -275,7 +274,7 @@ func main() {
 	flag.Parse()
 	err := rpc.Register(&Broker{})
 	if err != nil {
-		fmt.Println("14", err)
+		fmt.Println("Failed to register RPC methods: ", err)
 	}
 	listener, err := net.Listen("tcp", ":"+*pAddr)
 	if err != nil {

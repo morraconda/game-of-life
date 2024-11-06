@@ -193,7 +193,6 @@ func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 				}
 				quit <- true
 			case sdl.K_p: // pause
-				fmt.Println("PAUSE")
 				if paused {
 					paused = false
 					req.Value = 0
