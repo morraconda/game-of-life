@@ -9,11 +9,11 @@ import (
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
-
 // to prevent deadlock, always attempt grab mutexes in this order
 var pauseMutex sync.Mutex
 var stateMutex sync.Mutex // for world and turncount
-var ioMutex sync.Mutex
+var ioSpacesRemaining sync.Mutex
+var ioWorkAvailable sync.Mutex
 
 // get filename from params
 func getInputFilename(p Params) string {
@@ -25,27 +25,37 @@ func getOutputFilename(p Params, t int) string {
 }
 
 // gets initial 2D slice from input
-func getInitialWorld(ip ioParams, p Params) [][]byte {
+func getInitialWorld(ip *ioParams, p Params) [][]byte {
+	ioSpacesRemaining.Lock()
+	var in []byte
+	ip.input = in
+	ip.filename = getInputFilename(p)
+	ip.command = ioInput
+	ioWorkAvailable.Unlock()
 	// initialise 2D slice of rows
+	ioSpacesRemaining.Lock()
+	//fmt.Println("--", ip.input)
 	world := make([][]byte, p.ImageHeight)
 	for i := 0; i < p.ImageHeight; i++ {
 		// initialise row, set the contents of the row accordingly
 		world[i] = make([]byte, p.ImageWidth)
 		for j := 0; j < p.ImageWidth; j++ {
-			current = i * p.ImageWidth + j
+			current := i*p.ImageWidth + j
 			world[i][j] = ip.input[current]
 		}
 	}
+	ioSpacesRemaining.Unlock()
 	return world
 }
 
-// writes board state to output
-func writeToOutput(world [][]byte, turn int, p Params, filename string, ip ioParams) {
+// writes board state to ioParams
+func writeToIO(world [][]byte, p Params, ip *ioParams) {
 	for i := 0; i < p.ImageHeight; i++ {
 		for j := 0; j < p.ImageWidth; j++ {
-			ip[i][j] = world[i][j]
+			ip.output[i][j] = world[i][j]
 		}
 	}
+	//fmt.Println(world)
 }
 
 // get list of alive cells from a world
@@ -72,122 +82,126 @@ func reportState(turn *int, world *[][]byte, c chan<- Event, quit *bool) {
 	}
 }
 
-func saveOutput(world [][]byte, turn int, p Params, ip ioParams, events <-chan Event) {
-	stateMutex.Lock()
-	ioMutex.Lock()
-	ip.filename := getOutputFilename(p, turn)
-	writeToOutput(world, turn, p, c.ioOutput, filename)
+func saveOutput(world [][]byte, turn int, p Params, ip *ioParams, events chan<- Event) {
+	ioSpacesRemaining.Lock()
+	ip.command = ioOutput
+	ip.filename = getOutputFilename(p, turn)
+	writeToIO(world, p, ip)
+	ioWorkAvailable.Unlock()
 	fmt.Println("-- successfully wrote to output")
-	ioMutex.Unlock()
+
 	// send write event
+	ioSpacesRemaining.Lock()
 	fmt.Println("-- sending image event")
-	c.events <- ImageOutputComplete{turn, filename}
-	stateMutex.Unlock()
+	events <- ImageOutputComplete{turn, ip.filename}
+	ioSpacesRemaining.Unlock()
 }
 
-func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte, 
-	quit *bool, p Params, c distributorChannels) {
+func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte,
+	quit *bool, p Params, ip *ioParams, eventChan chan<- Event) {
 	paused := false
 	for !*quit {
-		case key := <-keypresses:
-			switch key {
-			case sdl.K_s: // save
-				fmt.Println("-- s pressed")
-				stateMutex.Lock()
-				saveOutput(*world, *turn, p, c)
-				stateMutex.Unlock()
+		key := <-keypresses
+		switch key {
+		case sdl.K_s: // save
+			fmt.Println("-- s pressed")
+			stateMutex.Lock()
+			saveOutput(*world, *turn, p, ip, eventChan)
+			stateMutex.Unlock()
 
-			case sdl.K_q: // quit
-				fmt.Println("-- q pressed")
-				if paused {
-					pauseMutex.Unlock()
-				}
-				*quit = true
-
-			case sdl.K_p: // pause
-				fmt.Println("-- p pressed")
-				stateMutex.Lock()
-				if paused {
-					fmt.Println("-- continuing")
-					c.events <- StateChange{*turn, Executing}
-					paused = false
-					pauseMutex.Unlock()
-				} else {
-					pauseMutex.Lock()
-					fmt.Println("-- paused on Turn", *turn)
-					c.events <- StateChange{*turn, Paused}
-					paused = true
-				}
-				stateMutex.Unlock()
-				paused = !paused		
+		case sdl.K_q: // quit
+			fmt.Println("-- q pressed")
+			if paused {
+				pauseMutex.Unlock()
 			}
+			*quit = true
+
+		case sdl.K_p: // pause
+			fmt.Println("-- p pressed")
+			if paused {
+				stateMutex.Lock()
+				fmt.Println("-- continuing")
+				eventChan <- StateChange{*turn, Executing}
+				paused = false
+				pauseMutex.Unlock()
+			} else {
+				pauseMutex.Lock()
+				stateMutex.Lock()
+				fmt.Println("-- paused on Turn", *turn)
+				eventChan <- StateChange{*turn, Paused}
+				paused = true
+			}
+			stateMutex.Unlock()
+			paused = !paused
+		}
 	}
 }
 
 // distributor executes all turns
-func distributor(p Params, ip ioParams, events chan<- Event, keypresses <-chan rune) {
+func distributor(p Params, ip *ioParams, events chan<- Event, keypresses <-chan rune) {
 	// Get initial world
-	ip.command <- ioInput
-	ip.filename <- getInputFilename(p)
-	world := getInitialWorld(c.ioInput, p)
+	ip.command = ioInput
+	ip.filename = getInputFilename(p)
+	world := getInitialWorld(ip, p)
 
-	quit := false
 	turn := 0
+	quit := false
 	var wg sync.WaitGroup
 
 	// get the initial alive cells and use them as input to CellsFlipped
 	initialFlippedCells := getAliveCells(world)
-	c.events <- CellsFlipped{turn, initialFlippedCells}
-	c.events <- StateChange{turn, Executing}
+	events <- CellsFlipped{turn, initialFlippedCells}
+	events <- StateChange{turn, Executing}
 
 	// Start alive cells ticker and keypress handler
-	wg.Add(2)
+	wg.Add(1)
 	go func() {
-		handleKeypress(keypresses, &turn, &world, &quit, p, c)
-		defer wg.Done()
+		handleKeypress(keypresses, &turn, &world, &quit, p, ip, events)
+		//wg.Done()
 	}()
 	go func() {
-		reportState(&turn, &world, c.events, &quit)
-		defer wg.Done()
+		reportState(&turn, &world, events, &quit)
+		wg.Done()
 	}()
 
+	fmt.Println("-- init completed")
 	// Main game loop
 	for !quit && turn < p.Turns {
+		//fmt.Println("-- Turn", turn, "started")
 		// give other goroutines priority to grab mutexes
-		time.Sleep(100 * time.Millisecond) 
+		time.Sleep(50 * time.Microsecond)
 		pauseMutex.Lock()
 		// get next state
 		newWorld := simulateTurn(world, p)
-		// advane to next state
+		// advance to next state
 		stateMutex.Lock()
-		flipped := getFlippedCells(world, newWorld)
-		c.events <- CellsFlipped{turn, flipped}
-		c.events <- TurnComplete{turn}
+		flipped := getFlippedCells(world, newWorld, p)
+		events <- CellsFlipped{turn, flipped}
+		events <- TurnComplete{turn}
 		world = newWorld
 		turn++
-		pauseMutex.Unlock()
 		stateMutex.Unlock()
+		pauseMutex.Unlock()
 	}
-
+	quit = true
+	fmt.Println("-- main loop exited")
 	// Wait for goroutines to confirm closure
 	wg.Wait()
-	fmt.Println("-- hiiiii")
 
 	// output final image
-	saveOutput(world, turn, p, c)
+	saveOutput(world, turn, p, ip, events)
 	aliveCells := getAliveCells(world)
-	c.events <- FinalTurnComplete{turn, aliveCells}
-	c.events <- StateChange{turn, Quitting}
+	events <- FinalTurnComplete{turn, aliveCells}
+	events <- StateChange{turn, Quitting}
 
 	// Close the channel to stop the SDL goroutine gracefully. Removing may cause deadlock.
-	close(c.events)
-
-	// Make sure that the Io has finished any output before exiting.
-	fmt.Println("-- hiiiiiiiiiiiiiii")
-	c.ioCommand <- ioCheckIdle
-	<-c.ioIdle
-
-	close(c.ioCommand)
+	close(events)
+	ioSpacesRemaining.Lock()
+	ip.command = ioQuit
+	ioWorkAvailable.Unlock()
+	ioSpacesRemaining.Lock()
+	ioSpacesRemaining.Unlock()
+	ioWorkAvailable.Unlock()
 
 	fmt.Println("-- we did it yippppeeee")
 }
@@ -196,23 +210,49 @@ func distributor(p Params, ip ioParams, events chan<- Event, keypresses <-chan r
 func simulateTurn(world [][]byte, p Params) [][]byte {
 	// initialise next world
 	newWorld := make([][]byte, p.ImageHeight)
-	for i:=0; i < p.ImageHeight; i++ {
+	for i := 0; i < p.ImageHeight; i++ {
 		newWorld[i] = make([]byte, p.ImageWidth)
 	}
+	var wg sync.WaitGroup
+	wg.Add(p.Threads)
 	// distribution logic
 	incrementY := p.ImageHeight / p.Threads
-	startY := 0
+
 	for i := 0; i < p.Threads; i++ {
+		startY := i * incrementY
 		var endY int
 		if i == p.Threads-1 {
 			endY = p.ImageHeight
 		} else {
-			endY = incrementY + startY
+			endY = (i + 1) * incrementY
 		}
-		go worker(world, newWorld, startY, endY, p)
-		startY += incrementY
+		go func() {
+			worker(world, newWorld, startY, endY, p)
+			wg.Done()
+		}()
+
 	}
+	// wait for all goroutines to return
+	wg.Wait()
+	//fmt.Println(newWorld)
 	return newWorld
+}
+
+// no mutexes should be required here as each cell should only be written to by
+// one worker
+func worker(world [][]byte, newWorld [][]byte, startY int, endY int, p Params) {
+	// initialise 2D slice of rows
+	width := p.ImageWidth
+	height := p.ImageHeight
+	for i := startY; i < endY; i++ {
+		// initialise row, set the contents of the row accordingly
+		for j := 0; j < width; j++ {
+			// check for flipped cells
+			cell := util.Cell{X: j, Y: i}
+			next := getNextCell(cell, world, width, height)
+			newWorld[i][j] = next
+		}
+	}
 }
 
 // returns in-bounds version of a cell if out of bounds
@@ -271,59 +311,14 @@ func getNextCell(cell util.Cell, world [][]byte, width int, height int) byte {
 	}
 }
 
-func getFlippedCells(oldWorld [][]byte, newWorld [][]byte) []util.Cell {
+func getFlippedCells(oldWorld [][]byte, newWorld [][]byte, p Params) []util.Cell {
 	var flipped []util.Cell
 	for i := 0; i < p.ImageHeight; i++ {
 		for j := 0; j < p.ImageWidth; j++ {
-			if world[i][j] != newWorld[i][j] {
+			if oldWorld[i][j] != newWorld[i][j] {
 				flipped = append(flipped, util.Cell{X: j, Y: i})
 			}
 		}
 	}
 	return flipped
-}
-
-// no mutexes should be required here as each cell should only be written to by 
-// one worker
-func worker(world [][]byte, newWorld [][]byte, startY int, endY int, p Params) {
-	// initialise 2D slice of rows
-	width := p.ImageWidth
-	height := p.ImageHeight
-	for i := startY; i < endY; i++ {
-		// initialise row, set the contents of the row accordingly
-		newWorld[i-startY] = make([]byte, width)
-		for j := 0; j < width; j++ {
-			// check for flipped cells
-			cell := util.Cell{X: j, Y: i}
-			next := getNextCell(cell, world, width, height)
-			newWorld[i-startY][j] = next
-		}
-	}
-}
-
-type Request struct {
-	World  [][]byte
-	StartY int
-	EndY   int
-	Height int
-	Width  int
-}
-
-type Response struct {
-	World   [][]byte
-	Flipped []util.Cell
-}
-
-type Update struct {
-	Flipped []util.Cell
-	World   [][]byte
-}
-
-type Subscription struct {
-	FactoryAddress string
-	Callback       string
-}
-
-type StatusReport struct {
-	Message string
 }

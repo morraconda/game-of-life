@@ -11,7 +11,6 @@ import (
 
 type ioParams struct {
 	command  ioCommand
-	idle     bool
 	filename string
 	output   [][]uint8
 	input    []uint8
@@ -20,7 +19,7 @@ type ioParams struct {
 // ioState is the internal ioState of the io goroutine.
 type ioState struct {
 	params   Params
-	channels ioParams
+	channels *ioParams
 }
 
 // ioCommand allows requesting behaviour from the io (pgm) goroutine.
@@ -35,8 +34,7 @@ type ioCommand uint8
 const (
 	ioOutput ioCommand = iota
 	ioInput
-	ioCheckIdle
-
+	ioQuit
 )
 
 // writePgmImage receives an array of bytes and writes it to a pgm file.
@@ -82,7 +80,8 @@ func (io *ioState) writePgmImage() {
 }
 
 // readPgmImage opens a pgm file and sends its data as an array of bytes.
-func (io *ioState) readPgmImage(filename string) {
+func (io *ioState) readPgmImage() {
+	filename := io.channels.filename
 
 	data, ioError := os.ReadFile("images/" + filename + ".pgm")
 	util.Check(ioError)
@@ -113,26 +112,28 @@ func (io *ioState) readPgmImage(filename string) {
 	for _, b := range image {
 		io.channels.input = append(io.channels.input, b)
 	}
-
 	fmt.Println("File", filename, "input done!")
 }
 
 // startIo should be the entrypoint of the io goroutine.
-func startIo(p Params, c ioParams) {
+func startIo(p Params, c *ioParams) {
 	io := ioState{
 		params:   p,
 		channels: c,
 	}
-
-	for command := range io.channels.command {
-		// Block and wait for requests from the distributor
+	// Block and wait for requests from the distributor
+	quit := false
+	for !quit {
+		ioWorkAvailable.Lock()
+		command := io.channels.command
 		switch command {
 		case ioInput:
 			io.readPgmImage()
 		case ioOutput:
 			io.writePgmImage()
-		case ioCheckIdle:
-			io.channels.idle <- true
+		case ioQuit:
+			quit = true
 		}
+		ioSpacesRemaining.Unlock()
 	}
 }
