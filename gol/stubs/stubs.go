@@ -5,16 +5,27 @@ import (
 )
 
 var Subscribe = "Broker.Subscribe"
-var NextState = "Broker.NextState"
 var Start = "Broker.Start"
-var Finish = "Broker.Finish"
-var Close = "Broker.Close"
+var Init = "Broker.Init"
+var GetState = "Broker.GetState"
+var Pause = "Broker.Pause"
+var Quit = "Broker.Quit"
+var ShutDown = "Broker.ShutDown"
 
 type Input struct {
 	World   [][]byte
 	Height  int
 	Width   int
 	Threads int
+	Turns   int
+}
+
+type Event struct {
+	Type  string
+	Turn  int
+	State string
+	Cells []util.Cell
+	Count int
 }
 
 type Request struct {
@@ -23,8 +34,8 @@ type Request struct {
 	EndY           int
 	Height         int
 	Width          int
-	TopNeighbor    string // Address of the top neighbor of a worker (the one before)
-	BottomNeighbor string // Address of the bottom neighbor of the worker (the one after)
+	TopNeighbor    string
+	BottomNeighbor string
 }
 
 type Response struct {
@@ -33,13 +44,19 @@ type Response struct {
 }
 
 type Update struct {
-	Flipped []util.Cell
-	World   [][]byte
+	Flipped    []util.Cell
+	World      [][]byte
+	Turn       int
+	AliveCells []util.Cell
 }
 
 type Subscription struct {
 	FactoryAddress string
 	Callback       string
+}
+
+type PauseData struct {
+	Value int
 }
 
 type StatusReport struct {
@@ -53,5 +70,6 @@ type HaloRequest struct {
 }
 
 type HaloResponse struct {
+	Row      []byte
 	Received bool
 }
