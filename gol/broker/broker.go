@@ -18,7 +18,8 @@ var superMX sync.RWMutex
 var jobsMX sync.RWMutex
 var wgMX sync.RWMutex
 var pAddr *string
-var workerAddresses []*exec.Cmd
+
+var workerAddresses = make(map[int]*exec.Cmd)
 var workerCount int
 var jobs = make(chan stubs.Request, 64)
 
@@ -41,7 +42,7 @@ func spawnWorkers() {
 
 	// Start a worker at this address
 	cmd := exec.Command("go", "run", "../server/server.go", "-ip=127.0.0.1:"+strconv.Itoa(port), "-broker=127.0.0.1:"+*pAddr)
-	workerAddresses = append(workerAddresses, cmd)
+	workerAddresses[workerCount] = cmd
 	err = cmd.Start()
 	workerCount += 1
 	if err != nil {
@@ -242,6 +243,8 @@ func (b *Broker) Subscribe(req stubs.Subscription, res *stubs.StatusReport) (err
 		go subscriberLoop(client, req.Callback, &b.newWorld, &b.wg)
 	} else {
 		fmt.Println("Lost connection with spawned worker, spawning another: ", err)
+		delete(workerAddresses, workerCount)
+		workerCount--
 		spawnWorkers()
 	}
 	return

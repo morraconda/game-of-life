@@ -1,144 +1,32 @@
 package main
 
 import (
+	"fmt"
+	"os"
 	"testing"
-
 	"uk.ac.bris.cs/gameoflife/gol"
 )
 
-// TestSdl tests for correct visualisation in the SDL window
-func TestSdl(t *testing.T) {
-	t.Run("turn", testSdlTurn)
-	t.Run("images", testSdlImages)
-	t.Run("alive", testSdlAlive)
-}
+const benchLength = 1000
 
-func testSdlTurn(t *testing.T) {
-	params := gol.Params{
-		Turns:       100,
-		Threads:     8,
-		ImageWidth:  512,
-		ImageHeight: 512,
-	}
-
-	keyPresses := make(chan rune, 10)
-	events := make(chan gol.Event, 1000)
-
-	golDone := make(chan bool, 1)
-	go func() {
-		gol.Run(params, events, keyPresses)
-		golDone <- true
-	}()
-
-	tester := MakeTester(t, params, keyPresses, events, golDone)
-	tester.SetTestTurn()
-
-	go func() {
-		tester.TestFinishes(20)
-		tester.TestTurnCompleteCount()
-		tester.Stop(false)
-	}()
-
-	tester.Loop()
-}
-
-func testSdlImages(t *testing.T) {
-	params := gol.Params{
-		Turns:       100,
-		Threads:     8,
-		ImageWidth:  512,
-		ImageHeight: 512,
-	}
-
-	keyPresses := make(chan rune, 10)
-	events := make(chan gol.Event, 1000)
-
-	golDone := make(chan bool, 1)
-	go func() {
-		gol.Run(params, events, keyPresses)
-		golDone <- true
-	}()
-
-	tester := MakeTester(t, params, keyPresses, events, golDone)
-	tester.SetTestSdl()
-
-	go func() {
-		tester.TestStartsExecuting()
-
-		turn, success := tester.AwaitSync() // Before first turn
-		if !success {
-			tester.Stop(false)
-			return
+func BenchmarkGol(b *testing.B) {
+	for threads := 1; threads <= 16; threads++ {
+		os.Stdout = nil // Disable all program output apart from benchmark results
+		p := gol.Params{
+			Turns:       benchLength,
+			Threads:     threads,
+			ImageWidth:  512,
+			ImageHeight: 512,
 		}
+		name := fmt.Sprintf("%dx%dx%d-%d", p.ImageWidth, p.ImageHeight, p.Turns, p.Threads)
+		b.Run(name, func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				events := make(chan gol.Event)
+				go gol.Run(p, events, nil)
+				for range events {
 
-		assert(tester.t, turn == 0, "Turn number should be 0 after first sync, not %v\n", turn)
-
-		tester.TestImage()
-		tester.Continue()
-
-		for turn < 100 {
-			turn, success = tester.AwaitSync() // After each turn
-			if !success {
-				tester.Stop(false)
-				return
+				}
 			}
-
-			if turn == 1 || turn == 100 {
-				tester.TestImage()
-			}
-
-			tester.Continue()
-		}
-
-		tester.Stop(false)
-	}()
-
-	tester.Loop()
-}
-
-func testSdlAlive(t *testing.T) {
-	params := gol.Params{
-		Turns:       100,
-		Threads:     8,
-		ImageWidth:  512,
-		ImageHeight: 512,
+		})
 	}
-
-	keyPresses := make(chan rune, 10)
-	events := make(chan gol.Event, 1000)
-
-	golDone := make(chan bool, 1)
-	go func() {
-		gol.Run(params, events, keyPresses)
-		golDone <- true
-	}()
-
-	tester := MakeTester(t, params, keyPresses, events, golDone)
-	tester.SetTestSdl()
-
-	go func() {
-		tester.TestStartsExecuting()
-
-		turn, success := tester.AwaitSync() // Before first turn
-		if !success {
-			tester.Stop(false)
-			return
-		}
-		assert(tester.t, turn == 0, "Turn number should be 0 after first sync, not %v\n", turn)
-		tester.Continue()
-
-		for turn < 100 {
-			turn, success = tester.AwaitSync() // After each turn
-			if !success {
-				tester.Stop(false)
-				return
-			}
-			tester.TestAlive()
-			tester.Continue()
-		}
-
-		tester.Stop(false)
-	}()
-
-	tester.Loop()
 }
