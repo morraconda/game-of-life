@@ -6,7 +6,10 @@ import (
 	"github.com/veandco/go-sdl2/sdl"
 	"log"
 	"net/rpc"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 	"uk.ac.bris.cs/gameoflife/gol/stubs"
 	"uk.ac.bris.cs/gameoflife/util"
@@ -120,9 +123,9 @@ func reportState(finished <-chan bool, wg *sync.WaitGroup, client *rpc.Client, c
 
 // forwards key presses to broker for handling
 func handleKeypress(keypresses <-chan rune, finished <-chan bool,
-	quit chan<- bool, shutdown chan<- bool, p Params, c distributorChannels, client *rpc.Client, wg *sync.WaitGroup, initWG *sync.WaitGroup) {
+	quit chan<- bool, shutdown chan<- bool, p Params, c distributorChannels, client *rpc.Client, wg *sync.WaitGroup, initWG *sync.WaitGroup, pause bool) {
 	initWG.Wait()
-	paused := false
+	paused := pause
 	for {
 		select {
 		case <-finished: // stop handling
@@ -218,20 +221,9 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 		log.Fatalf("Failed to connect to broker: %v", err)
 	}
 
-	// Get initial world
 	channel = c
 	c.ioCommand <- ioInput
 	c.ioFilename <- getInputFilename(p)
-	world := getInitialWorld(c.ioInput, p)
-
-	// Pack initial world to be sent to broker
-	status := new(stubs.StatusReport)
-	input := new(stubs.Input)
-	input.World = world
-	input.Width = p.ImageWidth
-	input.Height = p.ImageHeight
-	input.Threads = p.Threads
-	input.Turns = p.Turns
 
 	initWG := sync.WaitGroup{}
 	initWG.Add(1)
@@ -244,34 +236,80 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	shutdown := make(chan bool, 1)
 	finishedR := make(chan bool, 1)
 	finishedL := make(chan bool, 1)
-	go handleKeypress(keypresses, finishedR, quit, shutdown, p, c, client, &wg, &initWG)
+
+	// os signals for handling kill commands
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Check if game is already running
+	update := new(stubs.Update)
+	status := new(stubs.StatusReport)
+	err = client.Call(stubs.GetState, status, &update)
+	if err != nil {
+		fmt.Println("Error checking for existing game: ", err)
+	}
+	fmt.Println(update.Turn)
+
+	go handleKeypress(keypresses, finishedR, quit, shutdown, p, c, client, &wg, &initWG, update.Paused)
 	go reportState(finishedL, &wg, client, c, &initWG)
 
-	// Initialise broker
-	err = client.Call(stubs.Init, input, &status)
-	if err != nil {
-		fmt.Println("Error initialising in quit: ", err)
+	if update.Turn == 0 {
+		// Get initial world
+		world := getInitialWorld(c.ioInput, p)
+
+		// Pack initial world to be sent to broker
+		input := new(stubs.Input)
+		input.World = world
+		input.Width = p.ImageWidth
+		input.Height = p.ImageHeight
+		input.Threads = p.Threads
+		input.Turns = p.Turns
+
+		// Initialise broker
+		err = client.Call(stubs.Init, input, &status)
+		if err != nil {
+			fmt.Println("Error initialising: ", err)
+		}
+
+		// Send initial events
+		req := new(stubs.StatusReport)
+		res := new(stubs.Update)
+		err = client.Call(stubs.GetState, req, &res)
+		if err != nil {
+			fmt.Println("Error getting initial state: ", err)
+		}
+		c.events <- CellsFlipped{0, res.Flipped}
+		c.events <- StateChange{0, Executing}
+
+		client.Go(stubs.Start, status, &status, nil)
+
+	} else {
+		fmt.Println("Existing game detected, continuing")
+		req := new(stubs.StatusReport)
+		res := new(stubs.Update)
+		err = client.Call(stubs.GetTotalFlipped, req, &res)
+		c.events <- CellsFlipped{res.Turn, res.Flipped}
+		c.events <- StateChange{res.Turn, Executing}
 	}
 
-	// Send initial events
-	req := new(stubs.StatusReport)
-	res := new(stubs.Update)
-	err = client.Call(stubs.GetState, req, &res)
-	if err != nil {
-		fmt.Println("Error getting initial state: ", err)
-	}
-	c.events <- CellsFlipped{0, res.Flipped}
-	c.events <- StateChange{0, Executing}
-
-	// Run main loop in broker, block until it has finished
-	call := client.Go(stubs.Start, status, &status, nil)
+	// Block until broker has finished processing
+	block := client.Go(stubs.Executing, status, &status, nil)
 	initWG.Done()
 	select {
 	case <-quit:
 	case <-shutdown:
 		exit = true
-	case <-call.Done:
+	case <-block.Done:
 		saveOutput(client, p, c)
+	case <-sigChan:
+		//finishedR <- true
+		//finishedL <- true
+		//wg.Wait()
+		//err = client.Close()
+		//if err != nil {
+		//	fmt.Println("Error closing connection: ", err)
+		//}
+		os.Exit(0)
 	}
 
 	// Signal goroutines to close
@@ -279,8 +317,8 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	finishedL <- true
 
 	// Send final events
-	req = new(stubs.StatusReport)
-	res = new(stubs.Update)
+	req := new(stubs.StatusReport)
+	res := new(stubs.Update)
 	err = client.Call(stubs.GetState, req, &res)
 	if err != nil {
 		fmt.Println("Error getting final state: ", err)
