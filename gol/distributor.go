@@ -12,9 +12,7 @@ import (
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
-var pAddr = flag.String("ip", "127.0.0.1:8050", "IP and port to listen on")
 var brokerAddr = flag.String("broker", "127.0.0.1:8030", "Address of broker instance")
-var once sync.Once
 
 type distributorChannels struct {
 	events     chan<- Event
@@ -230,8 +228,11 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	input.World = world
 	input.Width = p.ImageWidth
 	input.Height = p.ImageHeight
-	input.Threads = p.Threads
 	input.Turns = p.Turns
+
+	// Set number of goroutines to run on each worker
+	input.Routines = 4
+	input.Threads = p.Threads / 4
 
 	initWG := sync.WaitGroup{}
 	initWG.Add(1)

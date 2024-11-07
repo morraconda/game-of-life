@@ -70,31 +70,65 @@ func getNextCell(cell util.Cell, world [][]byte, width int, height int) byte {
 	}
 }
 
-type Compute struct{}
-
-func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) (err error) {
+// Parallel worker
+func worker(world [][]byte, outChan chan<- [][]byte, flippedChan chan<- []util.Cell,
+	startY int, endY int, width int, height int) {
 	// initialise 2D slice of rows
-	log.Printf("Job processing")
-	newWorld := make([][]byte, req.EndY-req.StartY)
+	newWorld := make([][]byte, endY-startY)
 	var flipped []util.Cell
-	for i := req.StartY; i < req.EndY; i++ {
+	for i := startY; i < endY; i++ {
 		// initialise row, set the contents of the row accordingly
-		newWorld[i-req.StartY] = make([]byte, req.Width)
-		for j := 0; j < req.Width; j++ {
+		newWorld[i-startY] = make([]byte, width)
+		for j := 0; j < width; j++ {
 			// check for flipped cells
 			cell := util.Cell{X: j, Y: i}
-			old := newWorld[i-req.StartY][j]
-			next := getNextCell(cell, req.World, req.Width, req.Height)
+			old := newWorld[i-startY][j]
+			next := getNextCell(cell, world, width, height)
 			if old != next {
 				flipped = append(flipped, cell)
 			}
-			newWorld[i-req.StartY][j] = next
+			newWorld[i-startY][j] = next
 		}
+	}
+	outChan <- newWorld
+	flippedChan <- flipped
+}
+
+type Compute struct{}
+
+// Slices job up between workers
+func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) (err error) {
+	// initialise 2D slice of rows
+	var newWorld [][]byte
+	var flipped []util.Cell
+
+	outChans := make([]chan [][]byte, req.Routines)
+	flippedChan := make(chan []util.Cell, req.Routines)
+
+	incrementY := (req.EndY - req.StartY) / req.Routines
+	startY := req.StartY
+
+	for i := 0; i < req.Routines; i++ {
+		outChans[i] = make(chan [][]byte)
+		var endY int
+		if i == req.Routines-1 {
+			endY = req.EndY
+		} else {
+			endY = incrementY + startY
+		}
+		go worker(req.World, outChans[i], flippedChan, startY, endY, req.Width, req.Height)
+		startY += incrementY
+	}
+
+	for i := 0; i < req.Routines; i++ {
+		result := <-outChans[i]
+		close(outChans[i])
+		newWorld = append(newWorld, result...)
+		flipped = append(flipped, <-flippedChan...)
 	}
 
 	res.World = newWorld
 	res.Flipped = flipped
-	log.Printf("Job processed")
 	return
 }
 
@@ -133,8 +167,9 @@ func main() {
 	}
 
 	//subscribe to jobs
-	subscription := stubs.Subscription{FactoryAddress: *pAddr, Callback: "Compute.SimulateTurn"}
-	err = server.Call(stubs.Subscribe, subscription, 'a')
+	subscription := stubs.Subscription{WorkerAddress: *pAddr, Callback: "Compute.SimulateTurn"}
+	res := new(stubs.StatusReport)
+	err = server.Call(stubs.Subscribe, subscription, &res)
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 	wg.Wait()
