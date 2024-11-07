@@ -102,6 +102,10 @@ type Compute struct {
 
 //functions for getting the halo region top and bottom rows from the halo request
 func (s *Compute) GetTopRow(haloReq stubs.HaloRequest, haloRes stubs.HaloResponse) {
+	if len(haloReq.Row) == 0 {
+		log.Fatalf("Received empty top row from neighbor")
+	}
+	log.Printf("Received top row with size %d", len(haloReq.Row))
 	s.topRow = haloReq.Row
 	haloRes.Received = true
 	s.wg.Done()
@@ -110,6 +114,10 @@ func (s *Compute) GetTopRow(haloReq stubs.HaloRequest, haloRes stubs.HaloRespons
 
 // GetBottomRow get the bottom row from a neighbour
 func (s *Compute) GetBottomRow(haloReq stubs.HaloRequest, haloRes stubs.HaloResponse) {
+	if len(haloReq.Row) == 0 {
+		log.Fatalf("Received empty top row from neighbor")
+	}
+	log.Printf("Received top row with size %d", len(haloReq.Row))
 	s.bottomRow = haloReq.Row
 	haloRes.Received = true
 	s.wg.Done()
@@ -117,32 +125,65 @@ func (s *Compute) GetBottomRow(haloReq stubs.HaloRequest, haloRes stubs.HaloResp
 }
 
 func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) (err error) {
+
 	topRow := req.World[req.StartY]
 	bottomRow := req.World[req.EndY-1]
 
-	s.wg.Add(2)
-	go sendTopRow(topRow, req.TopNeighbor)
-	go sendBottomRow(bottomRow, req.BottomNeighbor)
-	s.wg.Wait()
+	// Send the top and bottom rows to neighbors
+	var wg sync.WaitGroup
+	wg.Add(2)
+	var topNeighborRow, bottomNeighborRow []byte
 
-	//some logic to process the entire state change after appending halo regions
+	go func() {
+		defer wg.Done()
+		var topHaloRes stubs.HaloResponse
+		if err := sendTopRow(topRow, req.TopNeighbor); err == nil {
+			topNeighborRow = topHaloRes.Row // store the received top halo row
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		var bottomHaloRes stubs.HaloResponse
+		if err := sendBottomRow(bottomRow, req.BottomNeighbor); err == nil {
+			bottomNeighborRow = bottomHaloRes.Row // store the received bottom halo row
+		}
+	}()
+
+	wg.Wait() // Ensure all halo rows are received
+
+	s.wg.Wait() // Ensure all halo rows are received
 
 	// initialise 2D slice of rows
 	log.Printf("Job processing")
 	newWorld := make([][]byte, req.EndY-req.StartY)
 	var flipped []util.Cell
+
 	for i := req.StartY; i < req.EndY; i++ {
-		// initialise row, set the contents of the row accordingly
+		// Initialize row, set the contents of the row accordingly
 		newWorld[i-req.StartY] = make([]byte, req.Width)
+
 		for j := 0; j < req.Width; j++ {
-			// check for flipped cells
 			cell := util.Cell{X: j, Y: i}
-			old := newWorld[i-req.StartY][j]
-			next := getNextCell(cell, req.World, req.Width, req.Height)
-			if old != next {
-				flipped = append(flipped, cell)
+
+			// Check if the current row is the first (top row) or last (bottom row) row and use the halo rows
+			if i == req.StartY { // Top row (using top row halo)
+				newWorld[i-req.StartY][j] = s.topRow[j]
+			} else if i == req.EndY-1 { // Bottom row (using bottom row halo)
+				newWorld[i-req.StartY][j] = s.bottomRow[j]
+			} else {
+				// Normal grid cells
+				old := newWorld[i-req.StartY][j]
+				next := getNextCell(cell, req.World, req.Width, req.Height)
+
+				// Check for flipped cells (state change detection)
+				if old != next {
+					flipped = append(flipped, cell)
+				}
+
+				// Update the cell with the next state
+				newWorld[i-req.StartY][j] = next
 			}
-			newWorld[i-req.StartY][j] = next
 		}
 	}
 
