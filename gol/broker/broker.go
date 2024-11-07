@@ -13,8 +13,8 @@ import (
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
-//TODO: optimise mutex locks to reduce waiting time (ie: separate superMX into a few independent locks)
-var superMX sync.RWMutex
+//TODO: optimise mutex locks to reduce waiting time (ie: separate stateMX into a few independent locks)
+var stateMX sync.RWMutex
 var jobsMX sync.RWMutex
 var wgMX sync.RWMutex
 var pAddr *string
@@ -64,10 +64,10 @@ func closeWorkers() {
 // Receive a board and slice it up into jobs
 func publish(width int, height int, threads int, world *[][]byte, wg *sync.WaitGroup) {
 	splitRequest := new(stubs.Request)
-	superMX.Lock()
+	stateMX.Lock()
 	splitRequest.World = *world
 	splitRequest.Width, splitRequest.Height = width, height
-	superMX.Unlock()
+	stateMX.Unlock()
 	incrementY := height / threads
 	startY := 0
 	jobsMX.Lock()
@@ -92,9 +92,7 @@ func publish(width int, height int, threads int, world *[][]byte, wg *sync.WaitG
 func subscriberLoop(client *rpc.Client, callback string, newWorld *[][]byte, wg *sync.WaitGroup) {
 	for {
 		//Take a job from the job queue
-		//jobsMX.Lock()
 		job := <-jobs
-		//jobsMX.Unlock()
 		response := new(stubs.Response) // Empty response
 		err := client.Call(callback, job, response)
 		if err != nil {
@@ -102,14 +100,11 @@ func subscriberLoop(client *rpc.Client, callback string, newWorld *[][]byte, wg 
 			panic(err)
 		}
 		//Append the results to the new state
-		superMX.Lock()
+		stateMX.Lock()
 		for i := 0; i < len(response.World); i++ {
 			(*newWorld)[job.StartY+i] = response.World[i]
 		}
-		//for i := 0; i < len(response.Flipped); i++ {
-		//	*flipped = append(*flipped, response.Flipped[i])
-		//}
-		superMX.Unlock()
+		stateMX.Unlock()
 		wgMX.Lock()
 		wg.Done()
 		wgMX.Unlock()
@@ -134,9 +129,9 @@ func nextState(width int, height int, threads int, world *[][]byte, newWorld *[]
 	publish(width, height, threads, world, wg)
 	// Wait until all jobs have been processed
 	wg.Wait()
-	superMX.Lock()
+	stateMX.Lock()
 	deepCopy(world, newWorld)
-	superMX.Unlock()
+	stateMX.Unlock()
 	return
 }
 
@@ -162,9 +157,9 @@ type Broker struct {
 
 func (b *Broker) Init(input stubs.Input, res *stubs.StatusReport) (err error) {
 	// Transfer and initialise variables
+	stateMX.Lock()
 	b.quit = make(chan bool)
 	b.paused = make(chan bool)
-	superMX.Lock()
 	b.height = input.Height
 	b.width = input.Width
 	b.world = input.World
@@ -177,7 +172,7 @@ func (b *Broker) Init(input stubs.Input, res *stubs.StatusReport) (err error) {
 		b.newWorld[i] = make([]byte, b.width)
 		b.oldWorld[i] = make([]byte, b.width)
 	}
-	superMX.Unlock()
+	stateMX.Unlock()
 
 	// If there are not enough workers currently available, spawn more
 	if b.threads > workerCount {
@@ -205,11 +200,11 @@ mainLoop:
 		default:
 			// Increment state
 			nextState(b.width, b.height, b.threads, &b.world, &b.newWorld, &b.wg)
-			superMX.Lock()
+			stateMX.Lock()
 			// Overwrite old world
 			deepCopy(&b.world, &b.newWorld)
 			b.turn++
-			superMX.Unlock()
+			stateMX.Unlock()
 		}
 	}
 	return err
@@ -251,7 +246,7 @@ func (b *Broker) Subscribe(req stubs.Subscription, res *stubs.StatusReport) (err
 }
 
 func (b *Broker) GetState(req stubs.StatusReport, res *stubs.Update) (err error) {
-	superMX.Lock()
+	stateMX.Lock()
 	res.World = make([][]byte, b.height)
 	for i := range res.World {
 		res.World[i] = make([]byte, b.width)
@@ -268,7 +263,7 @@ func (b *Broker) GetState(req stubs.StatusReport, res *stubs.Update) (err error)
 		}
 	}
 	deepCopy(&b.oldWorld, &b.world)
-	superMX.Unlock()
+	stateMX.Unlock()
 	return err
 }
 

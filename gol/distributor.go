@@ -120,7 +120,7 @@ func reportState(finished <-chan bool, wg *sync.WaitGroup, client *rpc.Client, c
 
 // forwards key presses to broker for handling
 func handleKeypress(keypresses <-chan rune, finished <-chan bool,
-	quit chan<- bool, p Params, c distributorChannels, client *rpc.Client, wg *sync.WaitGroup, initWG *sync.WaitGroup) {
+	quit chan<- bool, shutdown chan<- bool, p Params, c distributorChannels, client *rpc.Client, wg *sync.WaitGroup, initWG *sync.WaitGroup) {
 	initWG.Wait()
 	paused := false
 	for {
@@ -183,15 +183,7 @@ func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 				if err != nil {
 					fmt.Println("Error un-pausing in quit: ", err)
 				}
-				err = client.Call(stubs.Quit, req, &res)
-				if err != nil {
-					fmt.Println("Error quitting in shutdown: ", err)
-				}
-				err = client.Call(stubs.ShutDown, req, &res)
-				if err != nil {
-					fmt.Println("Error shutting down in shutdown: ", err)
-				}
-				quit <- true
+				shutdown <- true
 			case sdl.K_p: // pause
 				if paused {
 					paused = false
@@ -247,10 +239,12 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	// Start goroutines
 	wg := sync.WaitGroup{}
 	wg.Add(2)
+	exit := false
 	quit := make(chan bool, 1)
+	shutdown := make(chan bool, 1)
 	finishedR := make(chan bool, 1)
 	finishedL := make(chan bool, 1)
-	go handleKeypress(keypresses, finishedR, quit, p, c, client, &wg, &initWG)
+	go handleKeypress(keypresses, finishedR, quit, shutdown, p, c, client, &wg, &initWG)
 	go reportState(finishedL, &wg, client, c, &initWG)
 
 	// Initialise broker
@@ -274,6 +268,8 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	initWG.Done()
 	select {
 	case <-quit:
+	case <-shutdown:
+		exit = true
 	case <-call.Done:
 		saveOutput(client, p, c)
 	}
@@ -294,6 +290,15 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 
 	// Wait until goroutines have closed
 	wg.Wait()
+
+	if exit {
+		placeholderReq := new(stubs.PauseData)
+		placeholderRes := new(stubs.PauseData)
+		err = client.Call(stubs.ShutDown, placeholderReq, &placeholderRes)
+		if err != nil {
+			fmt.Println("Error shutting down: ", err)
+		}
+	}
 
 	// Close client
 	err = client.Close()
