@@ -39,11 +39,11 @@ func spawnWorkers() {
 	}
 	defer listener.Close()
 	port := listener.Addr().(*net.TCPAddr).Port
-	workerAddressStrings = append(workerAddressStrings, ":"+strconv.Itoa(port)) //append the worker address to this slice
 
 	// Start a worker at this address
 	cmd := exec.Command("go", "run", "../server/server.go", "-ip=127.0.0.1:"+strconv.Itoa(port), "-broker=127.0.0.1:"+*pAddr)
 	workerAddresses = append(workerAddresses, cmd)
+	workerAddressStrings = append(workerAddressStrings, strconv.Itoa(port))
 	err = cmd.Start()
 	workerCount += 1
 	if err != nil {
@@ -82,16 +82,18 @@ func publish(width int, height int, threads int, world *[][]byte, wg *sync.WaitG
 		}
 		startY += incrementY
 
-		//pass the addresses of neighbours to the top and bottom of the split request
+		//assigning neighbours
 		if i > 0 {
 			splitRequest.TopNeighbor = workerAddressStrings[i-1]
 		}
 		if i < threads-1 {
 			splitRequest.BottomNeighbor = workerAddressStrings[i+1]
 		}
-
-		if i < 0 || i >= threads-1 {
-			fmt.Println("Error out of bounds")
+		if i == 0 {
+			splitRequest.TopNeighbor = workerAddressStrings[threads-1]
+		}
+		if i == threads-1 {
+			splitRequest.BottomNeighbor = workerAddressStrings[0]
 		}
 
 		jobs <- *splitRequest
@@ -105,9 +107,7 @@ func publish(width int, height int, threads int, world *[][]byte, wg *sync.WaitG
 func subscriberLoop(client *rpc.Client, callback string, newWorld *[][]byte, wg *sync.WaitGroup) {
 	for {
 		//Take a job from the job queue
-		//jobsMX.Lock()
 		job := <-jobs
-		//jobsMX.Unlock()
 		response := new(stubs.Response) // Empty response
 		err := client.Call(callback, job, response)
 		if err != nil {
@@ -119,9 +119,7 @@ func subscriberLoop(client *rpc.Client, callback string, newWorld *[][]byte, wg 
 		for i := 0; i < len(response.World); i++ {
 			(*newWorld)[job.StartY+i] = response.World[i]
 		}
-		//for i := 0; i < len(response.Flipped); i++ {
-		//	*flipped = append(*flipped, response.Flipped[i])
-		//}
+
 		superMX.Unlock()
 		wgMX.Lock()
 		wg.Done()
