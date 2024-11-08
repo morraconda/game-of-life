@@ -199,7 +199,12 @@ mainLoop:
 			b.paused = true
 			// Halt loop and wait until pause is set to false
 			for pause {
-				pause = <-b.pause
+				select {
+				case pause = <-b.pause:
+				case <-b.quit:
+					break mainLoop
+				}
+
 			}
 			b.paused = false
 		case <-b.quit:
@@ -279,8 +284,10 @@ func (b *Broker) GetTotalFlipped(req stubs.StatusReport, res *stubs.Update) (err
 
 func (b *Broker) GetState(req stubs.StatusReport, res *stubs.Update) (err error) {
 	stateMX.Lock()
+	res.Paused = b.paused
 	if b.reset {
 		res.Running = false
+		res.Paused = false
 	}
 	res.World = make([][]byte, b.height)
 	for i := range res.World {
@@ -298,7 +305,6 @@ func (b *Broker) GetState(req stubs.StatusReport, res *stubs.Update) (err error)
 		}
 	}
 	deepCopy(&b.oldWorld, &b.world)
-	res.Paused = b.paused
 	stateMX.Unlock()
 	return err
 }

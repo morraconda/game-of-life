@@ -12,6 +12,9 @@ import (
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
+//TODO: figure out how to kill client gracefully
+//TODO: fix the illusive bug
+
 var brokerAddr = flag.String("broker", "127.0.0.1:8030", "Address of broker instance")
 
 type distributorChannels struct {
@@ -234,6 +237,7 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 			fmt.Println("Error getting initial state: ", err)
 		}
 		c.events <- CellsFlipped{0, res.Flipped}
+		c.events <- StateChange{res.Turn, Executing}
 
 		client.Go(stubs.Start, status, &status, nil)
 
@@ -243,7 +247,6 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 		res := new(stubs.Update)
 		err = client.Call(stubs.GetTotalFlipped, req, &res)
 		c.events <- CellsFlipped{res.Turn, res.Flipped}
-		c.events <- StateChange{res.Turn, Executing}
 	}
 
 	// Block until broker has finished processing
