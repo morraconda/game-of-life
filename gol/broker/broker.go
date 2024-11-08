@@ -288,6 +288,11 @@ func (b *Broker) GetState(req stubs.StatusReport, res *stubs.Update) (err error)
 	if b.reset {
 		res.Running = false
 		res.Paused = false
+	} else if b.turn == 0 {
+		res.Running = false
+		res.Paused = false
+	} else {
+		res.Running = true
 	}
 	res.World = make([][]byte, b.height)
 	for i := range res.World {

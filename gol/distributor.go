@@ -6,13 +6,18 @@ import (
 	"github.com/veandco/go-sdl2/sdl"
 	"log"
 	"net/rpc"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 	"uk.ac.bris.cs/gameoflife/gol/stubs"
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
-//TODO: figure out how to kill client gracefully
+//TODO: figure out how to kill client gracefully ie either:
+// close c.events when terminal is closed
+// figure out how to ignore quit event sent when ctrl+C is pressed
 //TODO: fix the illusive bug
 
 var brokerAddr = flag.String("broker", "127.0.0.1:8030", "Address of broker instance")
@@ -185,6 +190,9 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 		log.Fatalf("Failed to connect to broker: %v", err)
 	}
 
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT)
+
 	c.ioCommand <- ioInput
 	c.ioFilename <- getInputFilename(p)
 
@@ -254,6 +262,9 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	initWG.Done()
 	quitted := false
 	select {
+	case <-sigChan:
+		close(c.events)
+		os.Exit(0)
 	case <-quit:
 		quitted = true
 	case <-shutdown:
