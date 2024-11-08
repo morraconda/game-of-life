@@ -43,7 +43,7 @@ func spawnWorkers() {
 	// Start a worker at this address
 	cmd := exec.Command("go", "run", "../server/server.go", "-ip=127.0.0.1:"+strconv.Itoa(port), "-broker=127.0.0.1:"+*pAddr)
 	workerAddresses = append(workerAddresses, cmd)
-	//workerAddressStrings = append(workerAddressStrings, strconv.Itoa(port))
+	workerAddressStrings = append(workerAddressStrings, strconv.Itoa(port)) //might have to see whether to connect to actual address
 	err = cmd.Start()
 	workerCount += 1
 	if err != nil {
@@ -73,7 +73,10 @@ func publish(width int, height int, threads int, world *[][]byte, wg *sync.WaitG
 	startY := 0
 	jobsMX.Lock()
 	wgMX.Lock()
+
+	//here do we need an extra two rows for haloexchange? How are we going to send and process these?
 	for i := 0; i < threads; i++ {
+
 		splitRequest.StartY = startY
 		if i == threads-1 {
 			splitRequest.EndY = height
@@ -83,18 +86,16 @@ func publish(width int, height int, threads int, world *[][]byte, wg *sync.WaitG
 		startY += incrementY
 
 		//assigning neighbours
-		//if i > 0 {
-		//	splitRequest.TopNeighbor = workerAddressStrings[i-1]
-		//}
-		//if i < threads-1 {
-		//	splitRequest.BottomNeighbor = workerAddressStrings[i+1]
-		//}
-		//if i == 0 {
-		//	splitRequest.TopNeighbor = workerAddressStrings[threads-1]
-		//}
-		//if i == threads-1 {
-		//	splitRequest.BottomNeighbor = workerAddressStrings[0]
-		//}
+		if i > 0 {
+			splitRequest.TopNeighbor = workerAddressStrings[i-1]
+		} else {
+			splitRequest.TopNeighbor = workerAddressStrings[threads-1]
+		}
+		if i < threads-1 {
+			splitRequest.BottomNeighbor = workerAddressStrings[i+1]
+		} else {
+			splitRequest.BottomNeighbor = workerAddressStrings[0]
+		}
 
 		jobs <- *splitRequest
 		wg.Add(1)
@@ -114,6 +115,7 @@ func subscriberLoop(client *rpc.Client, callback string, newWorld *[][]byte, wg 
 
 			panic(err)
 		}
+
 		//Append the results to the new state
 		superMX.Lock()
 		for i := 0; i < len(response.World); i++ {

@@ -275,7 +275,7 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	select {
 	case <-quit:
 	case <-call.Done:
-		saveOutput(client, p, c)
+		saveOutput(client, p, c) //this is probably where the error lies
 	}
 
 	// Signal goroutines to close

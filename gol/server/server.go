@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/rpc"
@@ -29,6 +30,8 @@ func wrap(cell util.Cell, width int, height int) util.Cell {
 	}
 	return cell
 }
+
+//there is already a wrap function - use it!
 
 // returns list of cells adjacent to the one given, accounting for wraparounds
 func getAdjacentCells(cell util.Cell, width int, height int) []util.Cell {
@@ -70,79 +73,82 @@ func getNextCell(cell util.Cell, world [][]byte, width int, height int) byte {
 	}
 }
 
-////sending rows to neighbour via rpc address dialing
-//func sendTopRow(topRow []byte, neighborAddr string) error {
-//	var haloRes stubs.HaloResponse
-//	client, err := rpc.Dial("tcp", neighborAddr)
-//	if err != nil {
-//		fmt.Println("Error sending row", err)
-//	}
-//	defer client.Close()
-//	haloReq := stubs.HaloRequest{Row: topRow}
-//	return client.Call("Compute.GetBottomRow", haloReq, &haloRes)
-//}
-//
-//func sendBottomRow(bottomRow []byte, neighborAddr string) error {
-//	var haloRes stubs.HaloResponse
-//	client, err := rpc.Dial("tcp", neighborAddr)
-//	if err != nil {
-//		fmt.Println("Error sending row", err)
-//	}
-//	defer client.Close()
-//	haloReq := stubs.HaloRequest{Row: bottomRow}
-//	return client.Call("Compute.GetTopRow", haloReq, &haloRes)
-//}
+//WTHE POINT OF HALOEXCHANGE IS TO EXCHANGE INFORMATION BETWEEN THE CELLS IN ADJACENT ROWS BUT DIFFERENT WORKERS BECAUSE NEXT STATES ARE DEPENDENT ON ADJACENT CELLS
+//SEE MEDIAN FILTER MAYBE FOR AN EXAMPLE ON HOW TO IMPLEMENT
 
-type Compute struct {
-	//topRow    []byte
-	//bottomRow []byte
-	//wg        sync.WaitGroup
+//sending rows to neighbour via rpc address dialing
+func sendTopRow(topRow []byte, neighborAddr string) error {
+	var haloRes stubs.HaloResponse
+	client, err := rpc.Dial("tcp", neighborAddr)
+	if err != nil {
+		fmt.Println("Error sending row", err)
+	}
+	defer client.Close()
+	haloReq := stubs.HaloRequest{Row: topRow}
+	return client.Call("Compute.GetBottomRow", haloReq, &haloRes)
 }
 
-////functions for getting the halo region top and bottom rows from the halo request
-//func (s *Compute) GetTopRow(haloReq stubs.HaloRequest, haloRes stubs.HaloResponse) {
-//	log.Printf("Received top row with size %d", len(haloReq.Row))
-//	s.topRow = haloReq.Row
-//	haloRes.Received = true
-//	s.wg.Done()
-//	return
-//}
-//
-//// GetBottomRow get the bottom row from a neighbour
-//func (s *Compute) GetBottomRow(haloReq stubs.HaloRequest, haloRes stubs.HaloResponse) {
-//	log.Printf("Received top row with size %d", len(haloReq.Row))
-//	s.bottomRow = haloReq.Row
-//	haloRes.Received = true
-//	s.wg.Done()
-//	return
-//}
+func sendBottomRow(bottomRow []byte, neighborAddr string) error {
+	var haloRes stubs.HaloResponse
+	client, err := rpc.Dial("tcp", neighborAddr)
+	if err != nil {
+		fmt.Println("Error sending row", err)
+	}
+	defer client.Close()
+	haloReq := stubs.HaloRequest{Row: bottomRow}
+	return client.Call("Compute.GetTopRow", haloReq, &haloRes)
+}
+
+type Compute struct {
+	topRow    []byte
+	bottomRow []byte //halo rows?
+	wg        sync.WaitGroup
+}
+
+//functions for getting the halo region top and bottom rows from the halo request
+func (s *Compute) GetTopRow(haloReq stubs.HaloRequest, haloRes stubs.HaloResponse) {
+	s.topRow = haloReq.Row
+	haloRes.Received = true
+	s.wg.Done()
+	return
+}
+
+// GetBottomRow get the bottom row from a neighbour
+func (s *Compute) GetBottomRow(haloReq stubs.HaloRequest, haloRes stubs.HaloResponse) {
+	s.bottomRow = haloReq.Row
+	haloRes.Received = true
+	s.wg.Done()
+	return
+}
 
 func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) (err error) {
 	//is a for loop needed
 
-	//s.wg.Add(2)
-	////initialise rows to send to others
-	//topRow := req.World[req.StartY]
-	//bottomRow := req.World[req.EndY-1]
-	//s.wg.Wait()
+	s.wg.Add(2)
+	//define the top and bottom rows of the section, which are going to be sent to the halo regions of top and bottom neighbours respectively
+	topRow := req.World[req.StartY]
+	bottomRow := req.World[req.EndY-1]
 
 	////initialise halo regions
 	//var upperHalo []byte
 	//var lowerHalo []byte
 
-	////send rows to neighbours
-	//go sendTopRow(topRow, req.TopNeighbor)
-	//go sendBottomRow(bottomRow, req.BottomNeighbor)
+	//send rows to neighbours
+	go sendTopRow(topRow, req.TopNeighbor) //send the top row
+	go sendBottomRow(bottomRow, req.BottomNeighbor)
+	s.wg.Wait()
 
-	//simultaneous listen to receive its halo regions from top and bottom neighbours
-	//assign them to halo regions
+	//how to check the halo top and bottom rows are correct
+	//s.topRow)
+	//s.bottomRow)
 
-	//wait until everything is done using waitgroup
+	//then do we append the top and bottom row somehow to the existing world and then process all the turns, followed by returning the world minus the halo regions?
 
 	// initialise 2D slice of rows
 	log.Printf("Job processing")
-	newWorld := make([][]byte, req.EndY-req.StartY) //would two extra rows need to be added to the world
-	var flipped []util.Cell
+	newWorld := make([][]byte, req.EndY-req.StartY) //a variable to store the evolved world
+
+	var flipped []util.Cell //slice of cells which have been flipped
 	for i := req.StartY; i < req.EndY; i++ {
 		// initialise row, set the contents of the row accordingly
 		newWorld[i-req.StartY] = make([]byte, req.Width)
