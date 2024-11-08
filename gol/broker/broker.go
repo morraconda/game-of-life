@@ -147,15 +147,15 @@ type Broker struct {
 	wg          sync.WaitGroup
 
 	// State Variables
-	world      [][]byte // Current world
-	newWorld   [][]byte // New world
-	oldWorld   [][]byte // World from last update request
-	startWorld [][]byte // Initial world
-	pause      chan bool
-	paused     bool
-	quit       chan bool
-	done       chan bool
-	turn       int
+	world    [][]byte // Current world
+	newWorld [][]byte // New world
+	oldWorld [][]byte // World from last update request
+	pause    chan bool
+	paused   bool
+	quit     chan bool
+	done     chan bool
+	turn     int
+	reset    bool
 }
 
 func (b *Broker) Init(input stubs.Input, res *stubs.StatusReport) (err error) {
@@ -167,13 +167,13 @@ func (b *Broker) Init(input stubs.Input, res *stubs.StatusReport) (err error) {
 	b.height = input.Height
 	b.width = input.Width
 	b.world = input.World
-	b.startWorld = input.World
 	b.threads = input.Threads
 	b.turns = input.Turns
 	b.newWorld = make([][]byte, b.height)
 	b.oldWorld = make([][]byte, b.height)
 	b.paused = false
 	b.turn = 0
+	b.reset = false
 	for i := range b.newWorld {
 		b.newWorld[i] = make([]byte, b.width)
 		b.oldWorld[i] = make([]byte, b.width)
@@ -215,6 +215,8 @@ mainLoop:
 			stateMX.Unlock()
 		}
 	}
+	b.reset = true
+	b.done <- true
 	return err
 }
 
@@ -236,7 +238,7 @@ func (b *Broker) Pause(req stubs.PauseData, res *stubs.PauseData) (err error) {
 
 func (b *Broker) Quit(req stubs.PauseData, res *stubs.PauseData) (err error) {
 	b.quit <- true
-	b.turn = 0
+	b.reset = true
 	return
 }
 
@@ -265,7 +267,7 @@ func (b *Broker) GetTotalFlipped(req stubs.StatusReport, res *stubs.Update) (err
 	stateMX.Lock()
 	for i := 0; i < len(b.world); i++ {
 		for j := 0; j < len(b.world[i]); j++ {
-			if b.world[i][j] != b.startWorld[i][j] {
+			if b.world[i][j] == 255 {
 				res.Flipped = append(res.Flipped, util.Cell{X: j, Y: i})
 			}
 		}
@@ -277,6 +279,9 @@ func (b *Broker) GetTotalFlipped(req stubs.StatusReport, res *stubs.Update) (err
 
 func (b *Broker) GetState(req stubs.StatusReport, res *stubs.Update) (err error) {
 	stateMX.Lock()
+	if b.reset {
+		res.Running = false
+	}
 	res.World = make([][]byte, b.height)
 	for i := range res.World {
 		res.World[i] = make([]byte, b.width)

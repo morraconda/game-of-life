@@ -48,6 +48,7 @@ type Update struct {
 	World      [][]byte
 	Turn       int
 	Paused     bool
+	Running    bool
 	AliveCells []util.Cell
 }
 

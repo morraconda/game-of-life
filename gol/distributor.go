@@ -6,18 +6,13 @@ import (
 	"github.com/veandco/go-sdl2/sdl"
 	"log"
 	"net/rpc"
-	"os"
-	"os/signal"
 	"sync"
-	"syscall"
 	"time"
 	"uk.ac.bris.cs/gameoflife/gol/stubs"
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
-var pAddr = flag.String("ip", "127.0.0.1:8050", "IP and port to listen on")
 var brokerAddr = flag.String("broker", "127.0.0.1:8030", "Address of broker instance")
-var once sync.Once
 
 type distributorChannels struct {
 	events     chan<- Event
@@ -27,8 +22,6 @@ type distributorChannels struct {
 	ioOutput   chan<- uint8
 	ioInput    <-chan uint8
 }
-
-var channel distributorChannels
 
 // prints cell contents
 func printCell(cell util.Cell) {
@@ -152,40 +145,8 @@ func handleKeypress(keypresses <-chan rune, finished <-chan bool,
 					}
 				}
 			case sdl.K_q: // quit
-				if !paused {
-					req.Value = 1
-					err := client.Call(stubs.Pause, req, &res)
-					if err != nil {
-						fmt.Println("Error pausing in quit: ", err)
-					}
-				}
-				saveOutput(client, p, c)
-				//c.events <- FinalTurnComplete{res.Value}
-				req.Value = 0
-				err := client.Call(stubs.Pause, req, &res)
-				if err != nil {
-					fmt.Println("Error un-pausing in quit: ", err)
-				}
-				err = client.Call(stubs.Quit, req, &res)
-				if err != nil {
-					fmt.Println("Error quitting in quit: ", err)
-				}
 				quit <- true
 			case sdl.K_k: // shutdown
-				if !paused {
-					req.Value = 1
-					err := client.Call(stubs.Pause, req, &res)
-					if err != nil {
-						fmt.Println("Error pausing in shutdown: ", err)
-					}
-				}
-				saveOutput(client, p, c)
-				//c.events <- FinalTurnComplete{res.Value}
-				req.Value = 0
-				err := client.Call(stubs.Pause, req, &res)
-				if err != nil {
-					fmt.Println("Error un-pausing in quit: ", err)
-				}
 				shutdown <- true
 			case sdl.K_p: // pause
 				if paused {
@@ -221,7 +182,6 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 		log.Fatalf("Failed to connect to broker: %v", err)
 	}
 
-	channel = c
 	c.ioCommand <- ioInput
 	c.ioFilename <- getInputFilename(p)
 
@@ -237,10 +197,6 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	finishedR := make(chan bool, 1)
 	finishedL := make(chan bool, 1)
 
-	// os signals for handling kill commands
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
 	// Check if game is already running
 	update := new(stubs.Update)
 	status := new(stubs.StatusReport)
@@ -248,12 +204,11 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	if err != nil {
 		fmt.Println("Error checking for existing game: ", err)
 	}
-	fmt.Println(update.Turn)
 
 	go handleKeypress(keypresses, finishedR, quit, shutdown, p, c, client, &wg, &initWG, update.Paused)
 	go reportState(finishedL, &wg, client, c, &initWG)
 
-	if update.Turn == 0 {
+	if !update.Running {
 		// Get initial world
 		world := getInitialWorld(c.ioInput, p)
 
@@ -279,7 +234,6 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 			fmt.Println("Error getting initial state: ", err)
 		}
 		c.events <- CellsFlipped{0, res.Flipped}
-		c.events <- StateChange{0, Executing}
 
 		client.Go(stubs.Start, status, &status, nil)
 
@@ -295,21 +249,25 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	// Block until broker has finished processing
 	block := client.Go(stubs.Executing, status, &status, nil)
 	initWG.Done()
+	quitted := false
 	select {
 	case <-quit:
+		quitted = true
 	case <-shutdown:
+		quitted = true
 		exit = true
 	case <-block.Done:
 		saveOutput(client, p, c)
-	case <-sigChan:
-		//finishedR <- true
-		//finishedL <- true
-		//wg.Wait()
-		//err = client.Close()
-		//if err != nil {
-		//	fmt.Println("Error closing connection: ", err)
-		//}
-		os.Exit(0)
+	}
+
+	if quitted {
+		req := new(stubs.PauseData)
+		res := new(stubs.PauseData)
+		err = client.Call(stubs.Quit, req, &res)
+		if err != nil {
+			fmt.Println("Error quitting: ", err)
+		}
+		saveOutput(client, p, c)
 	}
 
 	// Signal goroutines to close
