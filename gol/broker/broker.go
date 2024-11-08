@@ -72,6 +72,7 @@ func publish(width int, height int, threads int, world *[][]byte, wg *sync.WaitG
 	startY := 0
 	jobsMX.Lock()
 	wgMX.Lock()
+	fmt.Println(threads)
 	for i := 0; i < threads; i++ {
 		splitRequest.StartY = startY
 		if i == threads-1 {
@@ -94,10 +95,15 @@ func subscriberLoop(client *rpc.Client, callback string, newWorld *[][]byte, wg 
 		//Take a job from the job queue
 		job := <-jobs
 		response := new(stubs.Response) // Empty response
+		job.Routines = 4
 		err := client.Call(callback, job, response)
 		if err != nil {
-
-			panic(err)
+			jobs <- job
+			fmt.Println("Worker dead, starting new worker:", err)
+			delete(workerAddresses, workerCount)
+			workerCount--
+			spawnWorkers()
+			return
 		}
 		//Append the results to the new state
 		stateMX.Lock()
@@ -137,10 +143,11 @@ func nextState(width int, height int, threads int, world *[][]byte, newWorld *[]
 
 type Broker struct {
 	// Configuration Variables
-	height  int
-	width   int
-	turns   int
-	threads int
+	height   int
+	width    int
+	turns    int
+	threads  int
+	routines int
 
 	// Worker and Job Management
 	distributor *rpc.Client
@@ -168,6 +175,7 @@ func (b *Broker) Init(input stubs.Input, res *stubs.StatusReport) (err error) {
 	b.width = input.Width
 	b.world = input.World
 	b.threads = input.Threads
+	b.routines = input.Routines
 	b.turns = input.Turns
 	b.newWorld = make([][]byte, b.height)
 	b.oldWorld = make([][]byte, b.height)
@@ -255,8 +263,9 @@ func (b *Broker) ShutDown(req stubs.PauseData, res *stubs.PauseData) (err error)
 
 // Subscribe Called by Server to subscribe to jobs
 func (b *Broker) Subscribe(req stubs.Subscription, res *stubs.StatusReport) (err error) {
-	client, err := rpc.Dial("tcp", req.FactoryAddress)
+	client, err := rpc.Dial("tcp", req.WorkerAddress)
 	if err == nil {
+		fmt.Println("Worker connected from: ", req.WorkerAddress)
 		go subscriberLoop(client, req.Callback, &b.newWorld, &b.wg)
 	} else {
 		fmt.Println("Lost connection with spawned worker, spawning another: ", err)
@@ -329,8 +338,6 @@ func main() {
 			fmt.Printf("Error: no ports available")
 		}
 	}
-	//potentially tweak the above by iterating through all possible ports around the target port
-	//rather than binding to a random one?
 
 	defer listener.Close()
 	rpc.Accept(listener)

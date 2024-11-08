@@ -15,11 +15,12 @@ var Executing = "Broker.Executing"
 var GetTotalFlipped = "Broker.GetTotalFlipped"
 
 type Input struct {
-	World   [][]byte
-	Height  int
-	Width   int
-	Threads int
-	Turns   int
+	World    [][]byte
+	Height   int
+	Width    int
+	Threads  int
+	Routines int
+	Turns    int
 }
 
 type Event struct {
@@ -31,11 +32,12 @@ type Event struct {
 }
 
 type Request struct {
-	World  [][]byte
-	StartY int
-	EndY   int
-	Height int
-	Width  int
+	World    [][]byte
+	StartY   int
+	EndY     int
+	Height   int
+	Width    int
+	Routines int
 }
 
 type Response struct {
@@ -53,8 +55,8 @@ type Update struct {
 }
 
 type Subscription struct {
-	FactoryAddress string
-	Callback       string
+	WorkerAddress string
+	Callback      string
 }
 
 type PauseData struct {

@@ -15,11 +15,6 @@ import (
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
-//TODO: figure out how to kill client gracefully ie either:
-// close c.events when terminal is closed
-// figure out how to ignore quit event sent when ctrl+C is pressed
-//TODO: fix the illusive bug
-
 var brokerAddr = flag.String("broker", "127.0.0.1:8030", "Address of broker instance")
 
 type distributorChannels struct {
@@ -195,6 +190,10 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 
 	c.ioCommand <- ioInput
 	c.ioFilename <- getInputFilename(p)
+
+	// Set number of goroutines to run on each worker
+	input.Routines = 4
+	input.Threads = p.Threads / 4
 
 	initWG := sync.WaitGroup{}
 	initWG.Add(1)
