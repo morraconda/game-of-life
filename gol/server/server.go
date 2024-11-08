@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"log"
 	"net"
 	"net/rpc"
@@ -72,118 +71,90 @@ func getNextCell(cell util.Cell, world [][]byte, width int, height int) byte {
 }
 
 ////sending rows to neighbour via rpc address dialing
-func sendTopRow(topRow []byte, neighborAddr string) error {
-	var haloRes stubs.HaloResponse
-	client, err := rpc.Dial("tcp", neighborAddr)
-	if err != nil {
-		fmt.Println("Error sending row", err)
-	}
-	defer client.Close()
-	haloReq := stubs.HaloRequest{Row: topRow}
-	return client.Call("Compute.GetBottomRow", haloReq, &haloRes)
-}
-
-func sendBottomRow(bottomRow []byte, neighborAddr string) error {
-	var haloRes stubs.HaloResponse
-	client, err := rpc.Dial("tcp", neighborAddr)
-	if err != nil {
-		fmt.Println("Error sending row", err)
-	}
-	defer client.Close()
-	haloReq := stubs.HaloRequest{Row: bottomRow}
-	return client.Call("Compute.GetTopRow", haloReq, &haloRes)
-}
+//func sendTopRow(topRow []byte, neighborAddr string) error {
+//	var haloRes stubs.HaloResponse
+//	client, err := rpc.Dial("tcp", neighborAddr)
+//	if err != nil {
+//		fmt.Println("Error sending row", err)
+//	}
+//	defer client.Close()
+//	haloReq := stubs.HaloRequest{Row: topRow}
+//	return client.Call("Compute.GetBottomRow", haloReq, &haloRes)
+//}
+//
+//func sendBottomRow(bottomRow []byte, neighborAddr string) error {
+//	var haloRes stubs.HaloResponse
+//	client, err := rpc.Dial("tcp", neighborAddr)
+//	if err != nil {
+//		fmt.Println("Error sending row", err)
+//	}
+//	defer client.Close()
+//	haloReq := stubs.HaloRequest{Row: bottomRow}
+//	return client.Call("Compute.GetTopRow", haloReq, &haloRes)
+//}
 
 type Compute struct {
-	topRow    []byte
-	bottomRow []byte
-	wg        sync.WaitGroup
+	//topRow    []byte
+	//bottomRow []byte
+	//wg        sync.WaitGroup
 }
 
-//functions for getting the halo region top and bottom rows from the halo request
-func (s *Compute) GetTopRow(haloReq stubs.HaloRequest, haloRes stubs.HaloResponse) {
-	if len(haloReq.Row) == 0 {
-		log.Fatalf("Received empty top row from neighbor")
-	}
-	log.Printf("Received top row with size %d", len(haloReq.Row))
-	s.topRow = haloReq.Row
-	haloRes.Received = true
-	s.wg.Done()
-	return
-}
-
-// GetBottomRow get the bottom row from a neighbour
-func (s *Compute) GetBottomRow(haloReq stubs.HaloRequest, haloRes stubs.HaloResponse) {
-	if len(haloReq.Row) == 0 {
-		log.Fatalf("Received empty top row from neighbor")
-	}
-	log.Printf("Received top row with size %d", len(haloReq.Row))
-	s.bottomRow = haloReq.Row
-	haloRes.Received = true
-	s.wg.Done()
-	return
-}
+////functions for getting the halo region top and bottom rows from the halo request
+//func (s *Compute) GetTopRow(haloReq stubs.HaloRequest, haloRes stubs.HaloResponse) {
+//	log.Printf("Received top row with size %d", len(haloReq.Row))
+//	s.topRow = haloReq.Row
+//	haloRes.Received = true
+//	s.wg.Done()
+//	return
+//}
+//
+//// GetBottomRow get the bottom row from a neighbour
+//func (s *Compute) GetBottomRow(haloReq stubs.HaloRequest, haloRes stubs.HaloResponse) {
+//	log.Printf("Received top row with size %d", len(haloReq.Row))
+//	s.bottomRow = haloReq.Row
+//	haloRes.Received = true
+//	s.wg.Done()
+//	return
+//}
 
 func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) (err error) {
+	//is a for loop needed
 
-	topRow := req.World[req.StartY]
-	bottomRow := req.World[req.EndY-1]
+	//s.wg.Add(2)
+	////initialise rows to send to others
+	//topRow := req.World[req.StartY]
+	//bottomRow := req.World[req.EndY-1]
+	//s.wg.Wait()
 
-	// Send the top and bottom rows to neighbors
-	var wg sync.WaitGroup
-	wg.Add(2)
-	var topNeighborRow, bottomNeighborRow []byte
+	////initialise halo regions
+	//var upperHalo []byte
+	//var lowerHalo []byte
 
-	go func() {
-		defer wg.Done()
-		var topHaloRes stubs.HaloResponse
-		if err := sendTopRow(topRow, req.TopNeighbor); err == nil {
-			topNeighborRow = topHaloRes.Row // store the received top halo row
-		}
-	}()
+	////send rows to neighbours
+	//go sendTopRow(topRow, req.TopNeighbor)
+	//go sendBottomRow(bottomRow, req.BottomNeighbor)
 
-	go func() {
-		defer wg.Done()
-		var bottomHaloRes stubs.HaloResponse
-		if err := sendBottomRow(bottomRow, req.BottomNeighbor); err == nil {
-			bottomNeighborRow = bottomHaloRes.Row // store the received bottom halo row
-		}
-	}()
+	//simultaneous listen to receive its halo regions from top and bottom neighbours
+	//assign them to halo regions
 
-	wg.Wait() // Ensure all halo rows are received
-
-	s.wg.Wait() // Ensure all halo rows are received
+	//wait until everything is done using waitgroup
 
 	// initialise 2D slice of rows
 	log.Printf("Job processing")
-	newWorld := make([][]byte, req.EndY-req.StartY)
+	newWorld := make([][]byte, req.EndY-req.StartY) //would two extra rows need to be added to the world
 	var flipped []util.Cell
-
 	for i := req.StartY; i < req.EndY; i++ {
-		// Initialize row, set the contents of the row accordingly
+		// initialise row, set the contents of the row accordingly
 		newWorld[i-req.StartY] = make([]byte, req.Width)
-
 		for j := 0; j < req.Width; j++ {
+			// check for flipped cells
 			cell := util.Cell{X: j, Y: i}
-
-			// Check if the current row is the first (top row) or last (bottom row) row and use the halo rows
-			if i == req.StartY { // Top row (using top row halo)
-				newWorld[i-req.StartY][j] = s.topRow[j]
-			} else if i == req.EndY-1 { // Bottom row (using bottom row halo)
-				newWorld[i-req.StartY][j] = s.bottomRow[j]
-			} else {
-				// Normal grid cells
-				old := newWorld[i-req.StartY][j]
-				next := getNextCell(cell, req.World, req.Width, req.Height)
-
-				// Check for flipped cells (state change detection)
-				if old != next {
-					flipped = append(flipped, cell)
-				}
-
-				// Update the cell with the next state
-				newWorld[i-req.StartY][j] = next
+			old := newWorld[i-req.StartY][j]
+			next := getNextCell(cell, req.World, req.Width, req.Height)
+			if old != next {
+				flipped = append(flipped, cell)
 			}
+			newWorld[i-req.StartY][j] = next
 		}
 	}
 
@@ -222,14 +193,16 @@ func main() {
 	}()
 
 	//Dial the broker
-	server, err := rpc.Dial("tcp", *brokerAddr)
+	brokerClient, err := rpc.Dial("tcp", *brokerAddr)
 	if err != nil {
-		log.Fatalf("Failed to connect to broker: %v", err)
+		log.Fatalf("Failed to connect to broker at %s: %v", *brokerAddr, err)
 	}
+	defer brokerClient.Close()
 
 	//subscribe to jobs
 	subscription := stubs.Subscription{FactoryAddress: *pAddr, Callback: "Compute.SimulateTurn"}
-	err = server.Call(stubs.Subscribe, subscription, 'a')
+	err = brokerClient.Call(stubs.Subscribe, subscription, 'a')
+
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 	wg.Wait()
