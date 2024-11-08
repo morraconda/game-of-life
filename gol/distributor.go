@@ -15,6 +15,12 @@ import (
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
+//TODO: add switch to disable visualisation
+//TODO: fix phantom bug that appears when running benchmark
+//TODO: fix quit not working after client reconnects:
+// this is due to Ctrl+C not exiting cleanly and leaving the events channel opening causing deadlock?
+// could also do with figuring out why the hell a q keypress is sometimes sent when ctrl+C is used
+
 var brokerAddr = flag.String("broker", "127.0.0.1:8030", "Address of broker instance")
 
 type distributorChannels struct {
@@ -191,10 +197,6 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	c.ioCommand <- ioInput
 	c.ioFilename <- getInputFilename(p)
 
-	// Set number of goroutines to run on each worker
-	input.Routines = 4
-	input.Threads = p.Threads / 4
-
 	initWG := sync.WaitGroup{}
 	initWG.Add(1)
 
@@ -230,6 +232,10 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 		input.Threads = p.Threads
 		input.Turns = p.Turns
 
+		// Set number of goroutines to run on each worker
+		input.Routines = 4
+		input.Threads = p.Threads / 4
+
 		// Initialise broker
 		err = client.Call(stubs.Init, input, &status)
 		if err != nil {
@@ -262,6 +268,8 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	quitted := false
 	select {
 	case <-sigChan:
+		c.ioCommand <- ioCheckIdle
+		<-c.ioIdle
 		close(c.events)
 		os.Exit(0)
 	case <-quit:
@@ -274,13 +282,16 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	}
 
 	if quitted {
+		fmt.Println("quitted")
 		req := new(stubs.PauseData)
 		res := new(stubs.PauseData)
 		err = client.Call(stubs.Quit, req, &res)
 		if err != nil {
 			fmt.Println("Error quitting: ", err)
 		}
-		saveOutput(client, p, c)
+		fmt.Println("waiting for save")
+		saveOutput(client, p, c) //TODO: HANGS HERE
+		fmt.Println("saved")
 	}
 
 	// Signal goroutines to close

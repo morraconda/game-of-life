@@ -72,7 +72,6 @@ func publish(width int, height int, threads int, world *[][]byte, wg *sync.WaitG
 	startY := 0
 	jobsMX.Lock()
 	wgMX.Lock()
-	fmt.Println(threads)
 	for i := 0; i < threads; i++ {
 		splitRequest.StartY = startY
 		if i == threads-1 {
@@ -212,13 +211,13 @@ mainLoop:
 				case <-b.quit:
 					break mainLoop
 				}
-
 			}
 			b.paused = false
 		case <-b.quit:
 			// Exit
 			break mainLoop
 		default:
+			fmt.Println(b.turn)
 			// Increment state
 			nextState(b.width, b.height, b.threads, &b.world, &b.newWorld, &b.wg)
 			stateMX.Lock()
