@@ -121,55 +121,51 @@ func (s *Compute) GetBottomRow(haloReq stubs.HaloRequest, haloRes stubs.HaloResp
 	return
 }
 
-func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) (err error) {
-	//is a for loop needed
-
+func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) error {
 	s.wg.Add(2)
-	//define the top and bottom rows of the section, which are going to be sent to the halo regions of top and bottom neighbours respectively
+	// Define the top and bottom rows of the section to be sent to neighbors
 	topRow := req.World[req.StartY]
 	bottomRow := req.World[req.EndY-1]
 
-	////initialise halo regions
-	//var upperHalo []byte
-	//var lowerHalo []byte
-
-	//send rows to neighbours
-	go sendTopRow(topRow, req.TopNeighbor) //send the top row
+	// Send rows to neighbors concurrently
+	go sendTopRow(topRow, req.TopNeighbor)
 	go sendBottomRow(bottomRow, req.BottomNeighbor)
+
 	s.wg.Wait()
 
-	//how to check the halo top and bottom rows are correct
-	//s.topRow)
-	//s.bottomRow)
-
-	//then do we append the top and bottom row somehow to the existing world and then process all the turns, followed by returning the world minus the halo regions?
-
-	// initialise 2D slice of rows
-	log.Printf("Job processing")
-	newWorld := make([][]byte, req.EndY-req.StartY) //a variable to store the evolved world
-
-	var flipped []util.Cell //slice of cells which have been flipped
+	// Create a temporary world slice with additional space for halo rows
+	tempWorld := make([][]byte, req.EndY-req.StartY+2)
+	tempWorld[0] = s.topRow // Add the received top halo row
 	for i := req.StartY; i < req.EndY; i++ {
-		// initialise row, set the contents of the row accordingly
-		newWorld[i-req.StartY] = make([]byte, req.Width)
+		tempWorld[i-req.StartY+1] = req.World[i] // Copy middle rows
+	}
+	tempWorld[req.EndY-req.StartY+1] = s.bottomRow // Add the received bottom halo row
+
+	// Initialize newWorld to store the evolved world section
+	newWorld := make([][]byte, req.EndY-req.StartY)
+	var flipped []util.Cell // Slice of cells which have been flipped
+
+	// Process each cell in the current segment, excluding halo rows
+	for i := 1; i < len(tempWorld)-1; i++ {
+		newWorld[i-1] = make([]byte, req.Width)
 		for j := 0; j < req.Width; j++ {
-			// check for flipped cells
-			cell := util.Cell{X: j, Y: i}
-			old := newWorld[i-req.StartY][j]
-			next := getNextCell(cell, req.World, req.Width, req.Height)
+			// Check and update cell state
+			cell := util.Cell{X: j, Y: i - 1 + req.StartY} // Original position in the full world
+			old := tempWorld[i][j]
+			next := getNextCell(cell, tempWorld, req.Width, req.Height) // Determine next state
+
 			if old != next {
 				flipped = append(flipped, cell)
 			}
-			newWorld[i-req.StartY][j] = next
+			newWorld[i-1][j] = next
 		}
 	}
 
 	res.World = newWorld
 	res.Flipped = flipped
 	log.Printf("Job processed")
-	return
+	return nil
 }
-
 func main() {
 	err := *new(error)
 	f, err = os.OpenFile("testlogfile", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)

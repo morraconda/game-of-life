@@ -69,14 +69,19 @@ func publish(width int, height int, threads int, world *[][]byte, wg *sync.WaitG
 	splitRequest.World = *world
 	splitRequest.Width, splitRequest.Height = width, height
 	superMX.Unlock()
+
 	incrementY := height / threads
 	startY := 0
+
+	// Add debugging to capture start of job publication
+	fmt.Printf("Publishing jobs for a %dx%d world with %d threads\n", width, height, threads)
+	fmt.Printf("Each job will handle %d rows (except possibly the last one)\n", incrementY)
+
 	jobsMX.Lock()
 	wgMX.Lock()
 
-	//here do we need an extra two rows for haloexchange? How are we going to send and process these?
 	for i := 0; i < threads; i++ {
-
+		// Calculate job boundaries
 		splitRequest.StartY = startY
 		if i == threads-1 {
 			splitRequest.EndY = height
@@ -85,7 +90,10 @@ func publish(width int, height int, threads int, world *[][]byte, wg *sync.WaitG
 		}
 		startY += incrementY
 
-		//assigning neighbours
+		// Debugging: Print the assigned slice for this job
+		fmt.Printf("Job %d assigned rows from %d to %d\n", i, splitRequest.StartY, splitRequest.EndY)
+
+		// Assign neighbors
 		if i > 0 {
 			splitRequest.TopNeighbor = workerAddressStrings[i-1]
 		} else {
@@ -97,9 +105,17 @@ func publish(width int, height int, threads int, world *[][]byte, wg *sync.WaitG
 			splitRequest.BottomNeighbor = workerAddressStrings[0]
 		}
 
+		// Debugging: Print neighbor assignment for this job
+		fmt.Printf("Job %d has TopNeighbor: %s and BottomNeighbor: %s\n", i, splitRequest.TopNeighbor, splitRequest.BottomNeighbor)
+
+		// Add job to the channel
 		jobs <- *splitRequest
 		wg.Add(1)
 	}
+
+	// Debugging: Confirm all jobs are published
+	fmt.Printf("Published %d jobs, each with a slice of the world.\n", threads)
+
 	wgMX.Unlock()
 	jobsMX.Unlock()
 }
@@ -263,6 +279,9 @@ func (b *Broker) Subscribe(req stubs.Subscription, res *stubs.StatusReport) (err
 
 func (b *Broker) GetState(req stubs.StatusReport, res *stubs.Update) (err error) {
 	superMX.Lock()
+	if len(b.world) == 0 || len(b.world[0]) == 0 {
+		fmt.Println("Error: Broker world not initialized")
+	}
 	res.World = make([][]byte, b.height)
 	for i := range res.World {
 		res.World[i] = make([]byte, b.width)
