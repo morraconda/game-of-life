@@ -161,6 +161,23 @@ func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) error {
 		}
 	}
 
+	//newWorld := make([][]byte, req.EndY-req.StartY)
+	//var flipped []util.Cell
+	//for i := req.StartY; i < req.EndY; i++ {
+	//	// initialise row, set the contents of the row accordingly
+	//	newWorld[i-req.StartY] = make([]byte, req.Width)
+	//	for j := 0; j < req.Width; j++ {
+	//		// check for flipped cells
+	//		cell := util.Cell{X: j, Y: i}
+	//		old := newWorld[i-req.StartY][j]
+	//		next := getNextCell(cell, req.World, req.Width, req.Height)
+	//		if old != next {
+	//			flipped = append(flipped, cell)
+	//		}
+	//		newWorld[i-req.StartY][j] = next
+	//	}
+	//}
+
 	res.World = newWorld
 	res.Flipped = flipped
 	log.Printf("Job processed")

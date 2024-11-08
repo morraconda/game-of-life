@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log"
 	"net"
 	"net/rpc"
 	"os"
@@ -43,7 +44,7 @@ func spawnWorkers() {
 	// Start a worker at this address
 	cmd := exec.Command("go", "run", "../server/server.go", "-ip=127.0.0.1:"+strconv.Itoa(port), "-broker=127.0.0.1:"+*pAddr)
 	workerAddresses = append(workerAddresses, cmd)
-	workerAddressStrings = append(workerAddressStrings, strconv.Itoa(port)) //might have to see whether to connect to actual address
+	workerAddressStrings = append(workerAddressStrings, "-ip=127.0.0.1:"+strconv.Itoa(port)) //might have to see whether to connect to actual address
 	err = cmd.Start()
 	workerCount += 1
 	if err != nil {
@@ -73,15 +74,10 @@ func publish(width int, height int, threads int, world *[][]byte, wg *sync.WaitG
 	incrementY := height / threads
 	startY := 0
 
-	// Add debugging to capture start of job publication
-	fmt.Printf("Publishing jobs for a %dx%d world with %d threads\n", width, height, threads)
-	fmt.Printf("Each job will handle %d rows (except possibly the last one)\n", incrementY)
-
 	jobsMX.Lock()
 	wgMX.Lock()
 
 	for i := 0; i < threads; i++ {
-		// Calculate job boundaries
 		splitRequest.StartY = startY
 		if i == threads-1 {
 			splitRequest.EndY = height
@@ -93,6 +89,9 @@ func publish(width int, height int, threads int, world *[][]byte, wg *sync.WaitG
 		// Debugging: Print the assigned slice for this job
 		fmt.Printf("Job %d assigned rows from %d to %d\n", i, splitRequest.StartY, splitRequest.EndY)
 
+		if len(workerAddressStrings) != threads {
+			log.Fatalf("Mismatch between workerAddressStrings length (%d) and threads (%d)", len(workerAddressStrings), threads)
+		}
 		// Assign neighbors
 		if i > 0 {
 			splitRequest.TopNeighbor = workerAddressStrings[i-1]
