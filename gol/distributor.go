@@ -74,11 +74,13 @@ func getAliveCells(world [][]byte) []util.Cell {
 // reports state every 2 seconds
 func reportState(turn *int, world *[][]byte, c chan<- Event, quit *bool) {
 	for !*quit {
-		time.Sleep(2 * time.Second)
 		stateMutex.Lock()
-		alive := getAliveCells(*world)
-		c <- Event(AliveCellsCount{*turn, len(alive)})
+		if *turn > 0 {
+			alive := getAliveCells(*world)
+			c <- Event(AliveCellsCount{*turn, len(alive)})
+		}
 		stateMutex.Unlock()
+		time.Sleep(2 * time.Second)
 	}
 }
 
@@ -132,7 +134,6 @@ func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte,
 				paused = true
 			}
 			stateMutex.Unlock()
-			paused = !paused
 		}
 	}
 }
@@ -143,10 +144,8 @@ func distributor(p Params, ip *ioParams, events chan<- Event, keypresses <-chan 
 	ip.command = ioInput
 	ip.filename = getInputFilename(p)
 	world := getInitialWorld(ip, p)
-
 	turn := 0
 	quit := false
-	var wg sync.WaitGroup
 
 	// get the initial alive cells and use them as input to CellsFlipped
 	initialFlippedCells := getAliveCells(world)
@@ -154,39 +153,28 @@ func distributor(p Params, ip *ioParams, events chan<- Event, keypresses <-chan 
 	events <- StateChange{turn, Executing}
 
 	// Start alive cells ticker and keypress handler
-	wg.Add(1)
-	go func() {
-		handleKeypress(keypresses, &turn, &world, &quit, p, ip, events)
-		//wg.Done()
-	}()
-	go func() {
-		reportState(&turn, &world, events, &quit)
-		wg.Done()
-	}()
+	go handleKeypress(keypresses, &turn, &world, &quit, p, ip, events)
+	go reportState(&turn, &world, events, &quit)
 
 	fmt.Println("-- init completed")
 	// Main game loop
+	stateMutex.Lock()
 	for !quit && turn < p.Turns {
-		//fmt.Println("-- Turn", turn, "started")
-		// give other goroutines priority to grab mutexes
-		time.Sleep(50 * time.Microsecond)
-		pauseMutex.Lock()
+		stateMutex.Unlock()
 		// get next state
 		newWorld := simulateTurn(world, p)
 		// advance to next state
+		pauseMutex.Lock()
 		stateMutex.Lock()
 		flipped := getFlippedCells(world, newWorld, p)
 		events <- CellsFlipped{turn, flipped}
 		events <- TurnComplete{turn}
 		world = newWorld
 		turn++
-		stateMutex.Unlock()
 		pauseMutex.Unlock()
 	}
 	quit = true
 	fmt.Println("-- main loop exited")
-	// Wait for goroutines to confirm closure
-	wg.Wait()
 
 	// output final image
 	saveOutput(world, turn, p, ip, events)
@@ -200,7 +188,9 @@ func distributor(p Params, ip *ioParams, events chan<- Event, keypresses <-chan 
 	ip.command = ioQuit
 	ioWorkAvailable.Unlock()
 	ioSpacesRemaining.Lock()
+	fmt.Println("hi")
 	ioSpacesRemaining.Unlock()
+	fmt.Println("hiii")
 	ioWorkAvailable.Unlock()
 
 	fmt.Println("-- we did it yippppeeee")
@@ -230,7 +220,6 @@ func simulateTurn(world [][]byte, p Params) [][]byte {
 			worker(world, newWorld, startY, endY, p)
 			wg.Done()
 		}()
-
 	}
 	// wait for all goroutines to return
 	wg.Wait()
