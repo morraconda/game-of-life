@@ -11,6 +11,8 @@ var GetState = "Broker.GetState"
 var Pause = "Broker.Pause"
 var Quit = "Broker.Quit"
 var ShutDown = "Broker.ShutDown"
+var Executing = "Broker.Executing"
+var GetTotalFlipped = "Broker.GetTotalFlipped"
 
 type Input struct {
 	World    [][]byte
@@ -47,6 +49,8 @@ type Update struct {
 	Flipped    []util.Cell
 	World      [][]byte
 	Turn       int
+	Paused     bool
+	Running    bool
 	AliveCells []util.Cell
 }
 

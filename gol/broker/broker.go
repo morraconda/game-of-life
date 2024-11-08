@@ -154,19 +154,23 @@ type Broker struct {
 	wg          sync.WaitGroup
 
 	// State Variables
-	world    [][]byte
-	newWorld [][]byte
-	oldWorld [][]byte
-	paused   chan bool
+	world    [][]byte // Current world
+	newWorld [][]byte // New world
+	oldWorld [][]byte // World from last update request
+	pause    chan bool
+	paused   bool
 	quit     chan bool
+	done     chan bool
 	turn     int
+	reset    bool
 }
 
 func (b *Broker) Init(input stubs.Input, res *stubs.StatusReport) (err error) {
 	// Transfer and initialise variables
 	stateMX.Lock()
 	b.quit = make(chan bool)
-	b.paused = make(chan bool)
+	b.pause = make(chan bool)
+	b.done = make(chan bool)
 	b.height = input.Height
 	b.width = input.Width
 	b.world = input.World
@@ -175,7 +179,9 @@ func (b *Broker) Init(input stubs.Input, res *stubs.StatusReport) (err error) {
 	b.turns = input.Turns
 	b.newWorld = make([][]byte, b.height)
 	b.oldWorld = make([][]byte, b.height)
+	b.paused = false
 	b.turn = 0
+	b.reset = false
 	for i := range b.newWorld {
 		b.newWorld[i] = make([]byte, b.width)
 		b.oldWorld[i] = make([]byte, b.width)
@@ -191,17 +197,24 @@ func (b *Broker) Init(input stubs.Input, res *stubs.StatusReport) (err error) {
 	return err
 }
 
-// Start Called by distributor
+// Start Called by distributor to begin main game loop
 func (b *Broker) Start(req stubs.StatusReport, res *stubs.StatusReport) (err error) {
 	// Main game loop
 mainLoop:
 	for b.turn < b.turns {
 		select {
-		case pause := <-b.paused:
+		case pause := <-b.pause:
+			b.paused = true
 			// Halt loop and wait until pause is set to false
 			for pause {
-				pause = <-b.paused
+				select {
+				case pause = <-b.pause:
+				case <-b.quit:
+					break mainLoop
+				}
+
 			}
+			b.paused = false
 		case <-b.quit:
 			// Exit
 			break mainLoop
@@ -215,14 +228,22 @@ mainLoop:
 			stateMX.Unlock()
 		}
 	}
+	b.reset = true
+	b.done <- true
+	return err
+}
+
+// Executing Used to block the distributor when game is still executing
+func (b *Broker) Executing(req stubs.StatusReport, res *stubs.StatusReport) (err error) {
+	<-b.done
 	return err
 }
 
 func (b *Broker) Pause(req stubs.PauseData, res *stubs.PauseData) (err error) {
 	if req.Value == 1 {
-		b.paused <- true
+		b.pause <- true
 	} else if req.Value == 0 {
-		b.paused <- false
+		b.pause <- false
 	}
 	res.Value = b.turn
 	return
@@ -230,6 +251,7 @@ func (b *Broker) Pause(req stubs.PauseData, res *stubs.PauseData) (err error) {
 
 func (b *Broker) Quit(req stubs.PauseData, res *stubs.PauseData) (err error) {
 	b.quit <- true
+	b.reset = true
 	return
 }
 
@@ -254,8 +276,33 @@ func (b *Broker) Subscribe(req stubs.Subscription, res *stubs.StatusReport) (err
 	return
 }
 
+// GetTotalFlipped returns the cells flipped from game start to the current state
+func (b *Broker) GetTotalFlipped(req stubs.StatusReport, res *stubs.Update) (err error) {
+	stateMX.Lock()
+	for i := 0; i < len(b.world); i++ {
+		for j := 0; j < len(b.world[i]); j++ {
+			if b.world[i][j] == 255 {
+				res.Flipped = append(res.Flipped, util.Cell{X: j, Y: i})
+			}
+		}
+	}
+	res.Turn = b.turn
+	stateMX.Unlock()
+	return
+}
+
 func (b *Broker) GetState(req stubs.StatusReport, res *stubs.Update) (err error) {
 	stateMX.Lock()
+	res.Paused = b.paused
+	if b.reset {
+		res.Running = false
+		res.Paused = false
+	} else if b.turn == 0 {
+		res.Running = false
+		res.Paused = false
+	} else {
+		res.Running = true
+	}
 	res.World = make([][]byte, b.height)
 	for i := range res.World {
 		res.World[i] = make([]byte, b.width)
