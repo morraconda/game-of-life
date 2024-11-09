@@ -8,6 +8,7 @@ import (
 	"net/rpc"
 	"os"
 	"sync"
+	"time"
 	"uk.ac.bris.cs/gameoflife/gol/stubs"
 	"uk.ac.bris.cs/gameoflife/util"
 )
@@ -73,86 +74,96 @@ func getNextCell(cell util.Cell, world [][]byte, width int, height int) byte {
 	}
 }
 
-//WTHE POINT OF HALOEXCHANGE IS TO EXCHANGE INFORMATION BETWEEN THE CELLS IN ADJACENT ROWS BUT DIFFERENT WORKERS BECAUSE NEXT STATES ARE DEPENDENT ON ADJACENT CELLS
-//SEE MEDIAN FILTER MAYBE FOR AN EXAMPLE ON HOW TO IMPLEMENT
-
-//sending rows to neighbour via rpc address dialing
+//THESE TWO FUNCTIONS ARE NOT NEEDED IN THE NON HALOEXCHANGE IMPLEMENTATION
+// sending rows to neighbour via rpc address dialing
 func sendTopRow(topRow []byte, neighborAddr string) error {
 	var haloRes stubs.HaloResponse
 	client, err := rpc.Dial("tcp", neighborAddr)
 	if err != nil {
-		fmt.Println("Error sending row", err)
+		return fmt.Errorf("error dialing top neighbor %s: %w", neighborAddr, err)
 	}
 	defer client.Close()
-	haloReq := stubs.HaloRequest{Row: topRow}
-	return client.Call("Compute.GetBottomRow", haloReq, &haloRes)
+	return client.Call("Compute.GetBottomRow", stubs.HaloRequest{Row: topRow}, &haloRes)
 }
 
 func sendBottomRow(bottomRow []byte, neighborAddr string) error {
 	var haloRes stubs.HaloResponse
 	client, err := rpc.Dial("tcp", neighborAddr)
 	if err != nil {
-		fmt.Println("Error sending row", err)
+		return fmt.Errorf("error dialing bottom neighbor %s: %w", neighborAddr, err)
 	}
 	defer client.Close()
-	haloReq := stubs.HaloRequest{Row: bottomRow}
-	return client.Call("Compute.GetTopRow", haloReq, &haloRes)
+	return client.Call("Compute.GetTopRow", stubs.HaloRequest{Row: bottomRow}, &haloRes)
 }
 
 type Compute struct {
-	topRow    []byte
-	bottomRow []byte //halo rows?
-	wg        sync.WaitGroup
+	topRowChan    chan []byte
+	bottomRowChan chan []byte
+	topRow        []byte
+	bottomRow     []byte
 }
 
-//functions for getting the halo region top and bottom rows from the halo request
+// GetTopRow functions for getting the halo region top and bottom rows from the halo request
 func (s *Compute) GetTopRow(haloReq stubs.HaloRequest, haloRes stubs.HaloResponse) {
-	s.topRow = haloReq.Row
+	s.topRowChan <- haloReq.Row
 	haloRes.Received = true
-	s.wg.Done()
-	return
 }
 
 // GetBottomRow get the bottom row from a neighbour
 func (s *Compute) GetBottomRow(haloReq stubs.HaloRequest, haloRes stubs.HaloResponse) {
-	s.bottomRow = haloReq.Row
+	s.bottomRowChan <- haloReq.Row
 	haloRes.Received = true
-	s.wg.Done()
-	return
 }
 
 func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) error {
-	s.wg.Add(2)
+	s.topRowChan = make(chan []byte, 1)
+	s.bottomRowChan = make(chan []byte, 1)
+
 	// Define the top and bottom rows of the section to be sent to neighbors
 	topRow := req.World[req.StartY]
 	bottomRow := req.World[req.EndY-1]
 
-	// Send rows to neighbors concurrently
-	go sendTopRow(topRow, req.TopNeighbor)
-	go sendBottomRow(bottomRow, req.BottomNeighbor)
-
-	s.wg.Wait()
-
-	// Create a temporary world slice with additional space for halo rows
-	tempWorld := make([][]byte, req.EndY-req.StartY+2)
-	tempWorld[0] = s.topRow // Add the received top halo row
-	for i := req.StartY; i < req.EndY; i++ {
-		tempWorld[i-req.StartY+1] = req.World[i] // Copy middle rows
+	// Send rows to neighbors synchronously
+	if err := sendTopRow(topRow, req.TopNeighbor); err != nil {
+		log.Println("Error sending top row:", err)
 	}
-	tempWorld[req.EndY-req.StartY+1] = s.bottomRow // Add the received bottom halo row
+	if err := sendBottomRow(bottomRow, req.BottomNeighbor); err != nil {
+		log.Println("Error sending bottom row:", err)
+	}
 
-	// Initialize newWorld to store the evolved world section
+	// Wait for halo rows to be received
+	select {
+	case s.topRow = <-s.topRowChan:
+		log.Println("Top row received successfully.")
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("Timed out waiting for top row from neighbor")
+	}
+
+	select {
+	case s.bottomRow = <-s.bottomRowChan:
+		log.Println("Bottom row received successfully.")
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("Timed out waiting for bottom row from neighbor")
+	}
+
+	// Prepare the temporary world with halo rows
+	tempWorld := make([][]byte, req.EndY-req.StartY+2)
+	tempWorld[0] = s.topRow
+	for i := 0; i < req.EndY-req.StartY; i++ {
+		tempWorld[i+1] = req.World[i+req.StartY] // Ensure correct alignment
+	}
+	tempWorld[req.EndY-req.StartY+1] = s.bottomRow
+
 	newWorld := make([][]byte, req.EndY-req.StartY)
-	var flipped []util.Cell // Slice of cells which have been flipped
+	var flipped []util.Cell
 
-	// Process each cell in the current segment, excluding halo rows
+	// Process each cell in the segment, excluding halo rows
 	for i := 1; i < len(tempWorld)-1; i++ {
 		newWorld[i-1] = make([]byte, req.Width)
 		for j := 0; j < req.Width; j++ {
-			// Check and update cell state
-			cell := util.Cell{X: j, Y: i - 1 + req.StartY} // Original position in the full world
+			cell := util.Cell{X: j, Y: i - 1 + req.StartY}
 			old := tempWorld[i][j]
-			next := getNextCell(cell, tempWorld, req.Width, req.Height) // Determine next state
+			next := getNextCell(cell, tempWorld, req.Width, req.Height)
 
 			if old != next {
 				flipped = append(flipped, cell)
@@ -161,28 +172,12 @@ func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) error {
 		}
 	}
 
-	//newWorld := make([][]byte, req.EndY-req.StartY)
-	//var flipped []util.Cell
-	//for i := req.StartY; i < req.EndY; i++ {
-	//	// initialise row, set the contents of the row accordingly
-	//	newWorld[i-req.StartY] = make([]byte, req.Width)
-	//	for j := 0; j < req.Width; j++ {
-	//		// check for flipped cells
-	//		cell := util.Cell{X: j, Y: i}
-	//		old := newWorld[i-req.StartY][j]
-	//		next := getNextCell(cell, req.World, req.Width, req.Height)
-	//		if old != next {
-	//			flipped = append(flipped, cell)
-	//		}
-	//		newWorld[i-req.StartY][j] = next
-	//	}
-	//}
-
 	res.World = newWorld
 	res.Flipped = flipped
 	log.Printf("Job processed")
 	return nil
 }
+
 func main() {
 	err := *new(error)
 	f, err = os.OpenFile("testlogfile", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
@@ -220,8 +215,8 @@ func main() {
 
 	//subscribe to jobs
 	subscription := stubs.Subscription{FactoryAddress: *pAddr, Callback: "Compute.SimulateTurn"}
-	err = brokerClient.Call(stubs.Subscribe, subscription, 'a')
-
+	var subscriptionRes stubs.StatusReport
+	err = brokerClient.Call("Broker.Subscribe", subscription, &subscriptionRes)
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 	wg.Wait()

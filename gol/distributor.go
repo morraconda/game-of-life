@@ -63,10 +63,6 @@ func getInitialWorld(input <-chan byte, p Params) [][]byte {
 
 // writes board state to output
 func writeToOutput(world [][]byte, turn int, p Params, outputChan chan<- byte) {
-	if len(world) == 0 || len(world[0]) == 0 {
-		fmt.Println("World data not initialized properly: write")
-		return
-	}
 	for i := 0; i < p.ImageHeight; i++ {
 		for j := 0; j < p.ImageWidth; j++ {
 			outputChan <- world[i][j]
@@ -87,10 +83,6 @@ func saveOutput(client *rpc.Client, p Params, c distributorChannels) (world [][]
 	<-c.ioIdle
 	c.ioCommand <- ioOutput
 	c.ioFilename <- getOutputFilename(p, output.Turn)
-	if len(world) == 0 || len(world[0]) == 0 {
-		fmt.Println("World data not initialized properly: save")
-		return
-	}
 	writeToOutput(output.World, output.Turn, p, c.ioOutput)
 	// close io
 	c.ioCommand <- ioCheckIdle
@@ -284,10 +276,6 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	select {
 	case <-quit:
 	case <-call.Done:
-		if len(world) == 0 || len(world[0]) == 0 {
-			fmt.Println("World data not initialized properly: distributor")
-			return
-		}
 		saveOutput(client, p, c) //this is probably where the error lies
 	}
 

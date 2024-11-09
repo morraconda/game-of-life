@@ -36,20 +36,23 @@ func spawnWorkers() {
 	// Allocate a random free address
 	listener, err := net.Listen("tcp", ":0")
 	if err != nil {
-		panic(err)
+		log.Fatalf("Error listening for worker address: %v", err)
 	}
 	defer listener.Close()
 	port := listener.Addr().(*net.TCPAddr).Port
 
 	// Start a worker at this address
 	cmd := exec.Command("go", "run", "../server/server.go", "-ip=127.0.0.1:"+strconv.Itoa(port), "-broker=127.0.0.1:"+*pAddr)
+	err = cmd.Start()
+	if err != nil {
+		log.Fatalf("Error starting worker process: %v", err)
+	}
+
+	// Append worker details only if successful
 	workerAddresses = append(workerAddresses, cmd)
 	workerAddressStrings = append(workerAddressStrings, "-ip=127.0.0.1:"+strconv.Itoa(port))
-	err = cmd.Start()
-	workerCount += 1 //increase worker count
-	if err != nil {
-		panic(err)
-	}
+	workerCount++
+	log.Printf("Spawned worker at 127.0.0.1:%d", port)
 }
 
 func closeWorkers() {
@@ -70,10 +73,8 @@ func publish(width int, height int, threads int, world *[][]byte, wg *sync.WaitG
 	splitRequest.World = *world
 	splitRequest.Width, splitRequest.Height = width, height
 	superMX.Unlock()
-
 	incrementY := height / threads
 	startY := 0
-
 	jobsMX.Lock()
 	wgMX.Lock()
 
@@ -87,6 +88,7 @@ func publish(width int, height int, threads int, world *[][]byte, wg *sync.WaitG
 		fmt.Println(p, v)
 	}
 
+	//setting the board into jobs
 	for i := 0; i < threads; i++ {
 		splitRequest.StartY = startY
 		if i == threads-1 {
@@ -98,12 +100,12 @@ func publish(width int, height int, threads int, world *[][]byte, wg *sync.WaitG
 
 		// Debugging: Print the assigned slice for this job
 		fmt.Printf("Job %d assigned rows from %d to %d\n", i, splitRequest.StartY, splitRequest.EndY)
-
+		//error message if the workerAddressStrings slice isnt equal to threads
 		if len(workerAddressStrings) != threads {
 			log.Fatalf("Mismatch between workerAddressStrings length (%d) and threads (%d)", len(workerAddressStrings), threads)
 		}
 
-		// Assign neighbors
+		// Assign neighbors THERE IS SOMETHING WRONG WITH HOW THEY ARE ASSIGNED
 		splitRequest.TopNeighbor = workerAddressStrings[(i+threads)%threads]
 
 		splitRequest.BottomNeighbor = workerAddressStrings[(i+1)%threads]
@@ -129,10 +131,12 @@ func subscriberLoop(client *rpc.Client, callback string, newWorld *[][]byte, wg 
 		//Take a job from the job queue
 		job := <-jobs
 		response := new(stubs.Response) // Empty response
+
+		log.Printf("Sending job to worker via RPC:")
 		err := client.Call(callback, job, response)
 		if err != nil {
-			fmt.Println(err)
-			panic(err)
+			log.Printf("Error in RPC call: %v", err)
+			return
 		}
 
 		//Append the results to the new state
