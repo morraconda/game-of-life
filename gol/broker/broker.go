@@ -101,7 +101,7 @@ func subscriberLoop(client *rpc.Client, callback string, newWorld *[][]byte, wg 
 		}
 		//Append the results to the new state
 		stateMX.Lock()
-		for i := 0; i < len(response.World); i++ {
+		for i := 0; i < job.EndY-job.StartY; i++ {
 			(*newWorld)[job.StartY+i] = response.World[i]
 		}
 		stateMX.Unlock()
@@ -168,7 +168,7 @@ func (b *Broker) Init(input stubs.Input, res *stubs.StatusReport) (err error) {
 	b.newWorld = make([][]byte, b.height)
 	b.oldWorld = make([][]byte, b.height)
 	b.turn = 0
-	for i := range b.newWorld {
+	for i := 0; i < b.height; i++ {
 		b.newWorld[i] = make([]byte, b.width)
 		b.oldWorld[i] = make([]byte, b.width)
 	}
