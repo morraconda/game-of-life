@@ -18,6 +18,7 @@ import (
 //TODO: add switch to disable visualisation
 //TODO: fix phantom bug that appears when running benchmark
 //TODO: fix quit not working after client reconnects:
+//TODO: add continuous state save for recovery
 // this is due to Ctrl+C not exiting cleanly and leaving the events channel opening causing deadlock?
 // could also do with figuring out why the hell a q keypress is sometimes sent when ctrl+C is used
 
@@ -97,7 +98,105 @@ func saveOutput(client *rpc.Client, p Params, c distributorChannels) (world [][]
 	return output.World
 }
 
+// Cache the state
+func makeCheckpoint(client *rpc.Client, p Params) {
+	pwd, _ := os.Getwd()
+	path := fmt.Sprintf("%s/gol/tmp/%s.cache", pwd, getInputFilename(p))
+	err := *new(error)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0644)
+	defer file.Close()
+	if err != nil {
+		fmt.Println("error opening: ", path, err)
+		return
+	}
+	output := new(stubs.Update)
+	status := new(stubs.StatusReport)
+	// get most recent output from broker
+	err = client.Call(stubs.GetState, status, &output)
+	if err != nil {
+		fmt.Println("Error calling broker in makeCheckpoint: ", err)
+		return
+	}
+	turnBytes := make([]byte, 4)
+	turnBytes[0] = byte(output.Turn >> 24)
+	turnBytes[1] = byte(output.Turn >> 16)
+	turnBytes[2] = byte(output.Turn >> 8)
+	turnBytes[3] = byte(output.Turn)
+
+	_, err = file.Write(turnBytes)
+	if err != nil {
+		fmt.Println("Error writing turn number in makeCheckPoint: ", err)
+		return
+	}
+	for i := 0; i < p.ImageHeight; i++ {
+		_, err = file.Write(output.World[i])
+		if err != nil {
+			fmt.Println("Error writing world in makeCheckPoint: ", err)
+			return
+		}
+	}
+	return
+
+}
+
+// If a cached state exists, load it
+func getCheckpoint(p Params, world *[][]byte, turn *int) {
+	pwd, _ := os.Getwd()
+	path := fmt.Sprintf("%s/gol/tmp/%s.cache", pwd, getInputFilename(p))
+	if _, err := os.Stat(path); err == nil {
+		file, err := os.OpenFile(path, os.O_RDONLY, 0644)
+		defer file.Close()
+		if err != nil {
+			return
+		}
+		turnBytes := make([]byte, 4)
+		_, err = file.Read(turnBytes)
+		if err != nil {
+			fmt.Println("Error reading turn number: ", err)
+			return
+		}
+
+		cachedTurn := int(turnBytes[0])<<24 | int(turnBytes[1])<<16 | int(turnBytes[2])<<8 | int(turnBytes[3])
+		fmt.Println(cachedTurn)
+
+		if cachedTurn != 0 && cachedTurn != p.Turns {
+			fmt.Println("Cached checkpoint for ", getInputFilename(p), " found, continuing execution from turn ", cachedTurn)
+			//line := make([]byte, p.ImageWidth)
+			for i := 0; i < p.ImageHeight; i++ {
+				line := make([]byte, p.ImageWidth)
+				_, err = file.Read(line)
+				if err != nil {
+					fmt.Println("Error reading line in makeCheckPoint: ", err)
+					return
+				}
+				(*world)[i] = line
+			}
+			*turn = cachedTurn
+			return
+		} else {
+			return
+		}
+	} else {
+		return
+	}
+}
+
+func periodicStateSave(finished <-chan bool, wg *sync.WaitGroup, client *rpc.Client, p Params, c distributorChannels, initWG *sync.WaitGroup) {
+	initWG.Wait()
+	for {
+		select {
+		case <-finished:
+			wg.Done()
+			return
+		case <-time.After(10 * time.Second):
+			fmt.Println("CACHING")
+			makeCheckpoint(client, p)
+		}
+	}
+}
+
 // Ran synchronously, reports state to distributor every 2 seconds
+// Also operates as heartbeat to check broker is still working
 func reportState(finished <-chan bool, wg *sync.WaitGroup, client *rpc.Client, c distributorChannels, initWG *sync.WaitGroup) {
 	initWG.Wait()
 	for {
@@ -202,12 +301,13 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 
 	// Start goroutines
 	wg := sync.WaitGroup{}
-	wg.Add(2)
+	wg.Add(3)
 	exit := false
 	quit := make(chan bool, 1)
 	shutdown := make(chan bool, 1)
 	finishedR := make(chan bool, 1)
 	finishedL := make(chan bool, 1)
+	finishedC := make(chan bool, 1)
 
 	// Check if game is already running
 	update := new(stubs.Update)
@@ -219,18 +319,20 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 
 	go handleKeypress(keypresses, finishedR, quit, shutdown, p, c, client, &wg, &initWG, update.Paused)
 	go reportState(finishedL, &wg, client, c, &initWG)
+	go periodicStateSave(finishedC, &wg, client, p, c, &initWG)
 
 	if !update.Running {
-		// Get initial world
-		world := getInitialWorld(c.ioInput, p)
-
 		// Pack initial world to be sent to broker
 		input := new(stubs.Input)
-		input.World = world
+		input.World = getInitialWorld(c.ioInput, p)
 		input.Width = p.ImageWidth
 		input.Height = p.ImageHeight
 		input.Threads = p.Threads
 		input.Turns = p.Turns
+		input.StartingTurn = 0
+
+		// Check for existing checkpoints for this execution
+		getCheckpoint(p, &input.World, &input.StartingTurn)
 
 		// Set number of goroutines to run on each worker
 		input.Routines = 4

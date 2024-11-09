@@ -15,12 +15,13 @@ var Executing = "Broker.Executing"
 var GetTotalFlipped = "Broker.GetTotalFlipped"
 
 type Input struct {
-	World    [][]byte
-	Height   int
-	Width    int
-	Threads  int
-	Routines int
-	Turns    int
+	World        [][]byte
+	Height       int
+	Width        int
+	Threads      int
+	Routines     int
+	Turns        int
+	StartingTurn int
 }
 
 type Event struct {

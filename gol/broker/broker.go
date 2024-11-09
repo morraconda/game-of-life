@@ -176,6 +176,7 @@ func (b *Broker) Init(input stubs.Input, res *stubs.StatusReport) (err error) {
 	b.threads = input.Threads
 	b.routines = input.Routines
 	b.turns = input.Turns
+	b.turn = input.StartingTurn
 	b.newWorld = make([][]byte, b.height)
 	b.oldWorld = make([][]byte, b.height)
 	b.paused = false
