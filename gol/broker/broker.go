@@ -44,9 +44,9 @@ func spawnWorkers() {
 	// Start a worker at this address
 	cmd := exec.Command("go", "run", "../server/server.go", "-ip=127.0.0.1:"+strconv.Itoa(port), "-broker=127.0.0.1:"+*pAddr)
 	workerAddresses = append(workerAddresses, cmd)
-	workerAddressStrings = append(workerAddressStrings, "-ip=127.0.0.1:"+strconv.Itoa(port)) //might have to see whether to connect to actual address
+	workerAddressStrings = append(workerAddressStrings, "-ip=127.0.0.1:"+strconv.Itoa(port))
 	err = cmd.Start()
-	workerCount += 1
+	workerCount += 1 //increase worker count
 	if err != nil {
 		panic(err)
 	}
@@ -77,6 +77,16 @@ func publish(width int, height int, threads int, world *[][]byte, wg *sync.WaitG
 	jobsMX.Lock()
 	wgMX.Lock()
 
+	//make sure there are enough workers
+	for i := len(workerAddressStrings); i < threads; i++ {
+		spawnWorkers()
+	}
+
+	//debugging: printing workeraddress strings to see if neighbours were assigned right
+	for p, v := range workerAddressStrings {
+		fmt.Println(p, v)
+	}
+
 	for i := 0; i < threads; i++ {
 		splitRequest.StartY = startY
 		if i == threads-1 {
@@ -92,17 +102,11 @@ func publish(width int, height int, threads int, world *[][]byte, wg *sync.WaitG
 		if len(workerAddressStrings) != threads {
 			log.Fatalf("Mismatch between workerAddressStrings length (%d) and threads (%d)", len(workerAddressStrings), threads)
 		}
+
 		// Assign neighbors
-		if i > 0 {
-			splitRequest.TopNeighbor = workerAddressStrings[i-1]
-		} else {
-			splitRequest.TopNeighbor = workerAddressStrings[threads-1]
-		}
-		if i < threads-1 {
-			splitRequest.BottomNeighbor = workerAddressStrings[i+1]
-		} else {
-			splitRequest.BottomNeighbor = workerAddressStrings[0]
-		}
+		splitRequest.TopNeighbor = workerAddressStrings[(i+threads)%threads]
+
+		splitRequest.BottomNeighbor = workerAddressStrings[(i+1)%threads]
 
 		// Debugging: Print neighbor assignment for this job
 		fmt.Printf("Job %d has TopNeighbor: %s and BottomNeighbor: %s\n", i, splitRequest.TopNeighbor, splitRequest.BottomNeighbor)
@@ -113,7 +117,7 @@ func publish(width int, height int, threads int, world *[][]byte, wg *sync.WaitG
 	}
 
 	// Debugging: Confirm all jobs are published
-	fmt.Printf("Published %d jobs, each with a slice of the world.\n", threads)
+	fmt.Printf("Published %d jobs\n", threads)
 
 	wgMX.Unlock()
 	jobsMX.Unlock()
@@ -127,7 +131,7 @@ func subscriberLoop(client *rpc.Client, callback string, newWorld *[][]byte, wg 
 		response := new(stubs.Response) // Empty response
 		err := client.Call(callback, job, response)
 		if err != nil {
-
+			fmt.Println(err)
 			panic(err)
 		}
 
