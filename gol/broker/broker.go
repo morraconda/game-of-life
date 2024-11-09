@@ -50,7 +50,7 @@ func spawnWorkers() {
 
 	// Append worker details only if successful
 	workerAddresses = append(workerAddresses, cmd)
-	workerAddressStrings = append(workerAddressStrings, "-ip=127.0.0.1:"+strconv.Itoa(port))
+	workerAddressStrings = append(workerAddressStrings, "127.0.0.1:"+strconv.Itoa(port))
 	workerCount++
 	log.Printf("Spawned worker at 127.0.0.1:%d", port)
 }
@@ -105,9 +105,8 @@ func publish(width int, height int, threads int, world *[][]byte, wg *sync.WaitG
 			log.Fatalf("Mismatch between workerAddressStrings length (%d) and threads (%d)", len(workerAddressStrings), threads)
 		}
 
-		// Assign neighbors THERE IS SOMETHING WRONG WITH HOW THEY ARE ASSIGNED
-		splitRequest.TopNeighbor = workerAddressStrings[(i+threads)%threads]
-
+		// Assign neighbors
+		splitRequest.TopNeighbor = workerAddressStrings[(i-1+threads)%threads]
 		splitRequest.BottomNeighbor = workerAddressStrings[(i+1)%threads]
 
 		// Debugging: Print neighbor assignment for this job

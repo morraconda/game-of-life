@@ -104,13 +104,13 @@ type Compute struct {
 }
 
 // GetTopRow functions for getting the halo region top and bottom rows from the halo request
-func (s *Compute) GetTopRow(haloReq stubs.HaloRequest, haloRes stubs.HaloResponse) {
+func (s *Compute) GetTopRow(haloReq stubs.HaloRequest, haloRes *stubs.HaloResponse) {
 	s.topRowChan <- haloReq.Row
 	haloRes.Received = true
 }
 
 // GetBottomRow get the bottom row from a neighbour
-func (s *Compute) GetBottomRow(haloReq stubs.HaloRequest, haloRes stubs.HaloResponse) {
+func (s *Compute) GetBottomRow(haloReq stubs.HaloRequest, haloRes *stubs.HaloResponse) {
 	s.bottomRowChan <- haloReq.Row
 	haloRes.Received = true
 }
@@ -123,34 +123,41 @@ func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) error {
 	topRow := req.World[req.StartY]
 	bottomRow := req.World[req.EndY-1]
 
-	// Send rows to neighbors synchronously
+	// Send rows to neighbors with error handling and debugging
+	log.Printf("Sending top row to neighbor at %s", req.TopNeighbor)
 	if err := sendTopRow(topRow, req.TopNeighbor); err != nil {
-		log.Println("Error sending top row:", err)
-	}
-	if err := sendBottomRow(bottomRow, req.BottomNeighbor); err != nil {
-		log.Println("Error sending bottom row:", err)
+		log.Printf("Error sending top row to %s: %v", req.TopNeighbor, err)
+		return err
 	}
 
-	// Wait for halo rows to be received
+	log.Printf("Sending bottom row to neighbor at %s", req.BottomNeighbor)
+	if err := sendBottomRow(bottomRow, req.BottomNeighbor); err != nil {
+		log.Printf("Error sending bottom row to %s: %v", req.BottomNeighbor, err)
+		return err
+	}
+
+	// Wait for halo rows to be received with extended timeout and debug output
 	select {
 	case s.topRow = <-s.topRowChan:
 		log.Println("Top row received successfully.")
-	case <-time.After(5 * time.Second):
-		return fmt.Errorf("Timed out waiting for top row from neighbor")
+	case <-time.After(10 * time.Second): // Increased from 5 to 10 seconds
+		log.Printf("Timed out waiting for top row from neighbor %s", req.TopNeighbor)
+		return fmt.Errorf("timed out waiting for top row from neighbor %s", req.TopNeighbor)
 	}
 
 	select {
 	case s.bottomRow = <-s.bottomRowChan:
 		log.Println("Bottom row received successfully.")
-	case <-time.After(5 * time.Second):
-		return fmt.Errorf("Timed out waiting for bottom row from neighbor")
+	case <-time.After(10 * time.Second): // Increased from 5 to 10 seconds
+		log.Printf("Timed out waiting for bottom row from neighbor %s", req.BottomNeighbor)
+		return fmt.Errorf("timed out waiting for bottom row from neighbor %s", req.BottomNeighbor)
 	}
 
 	// Prepare the temporary world with halo rows
 	tempWorld := make([][]byte, req.EndY-req.StartY+2)
 	tempWorld[0] = s.topRow
 	for i := 0; i < req.EndY-req.StartY; i++ {
-		tempWorld[i+1] = req.World[i+req.StartY] // Ensure correct alignment
+		tempWorld[i+1] = req.World[i+req.StartY]
 	}
 	tempWorld[req.EndY-req.StartY+1] = s.bottomRow
 
@@ -174,7 +181,7 @@ func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) error {
 
 	res.World = newWorld
 	res.Flipped = flipped
-	log.Printf("Job processed")
+	log.Printf("Job processed successfully")
 	return nil
 }
 
@@ -207,6 +214,7 @@ func main() {
 	}()
 
 	//Dial the broker
+	time.Sleep(500 * time.Millisecond)
 	brokerClient, err := rpc.Dial("tcp", *brokerAddr)
 	if err != nil {
 		log.Fatalf("Failed to connect to broker at %s: %v", *brokerAddr, err)
