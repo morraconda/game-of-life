@@ -14,6 +14,8 @@ var ShutDown = "Broker.ShutDown"
 var Executing = "Broker.Executing"
 var GetTotalFlipped = "Broker.GetTotalFlipped"
 
+var SimulateTurn = "Compute.SimulateTurn"
+
 type Input struct {
 	World        [][]byte
 	Height       int

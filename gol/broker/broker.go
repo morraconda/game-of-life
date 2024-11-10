@@ -98,7 +98,7 @@ func subscriberLoop(client *rpc.Client, callback string, newWorld *[][]byte, wg 
 		job := <-jobs
 		response := new(stubs.Response) // Empty response
 		job.Routines = 4
-		err := client.Call(callback, job, response)
+		err := client.Call(stubs.SimulateTurn, job, response)
 		if err != nil {
 			jobs <- job
 			fmt.Println("Worker dead, starting new worker:", err)
