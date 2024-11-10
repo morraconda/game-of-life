@@ -34,7 +34,6 @@ func getInitialWorld(ip *ioParams, p Params) [][]byte {
 	ioWorkAvailable.Unlock()
 	// initialise 2D slice of rows
 	ioSpacesRemaining.Lock()
-	//fmt.Println("--", ip.input)
 	world := make([][]byte, p.ImageHeight)
 	for i := 0; i < p.ImageHeight; i++ {
 		// initialise row, set the contents of the row accordingly
@@ -55,7 +54,6 @@ func writeToIO(world [][]byte, p Params, ip *ioParams) {
 			ip.output[i][j] = world[i][j]
 		}
 	}
-	//fmt.Println(world)
 }
 
 // get list of alive cells from a world
@@ -188,12 +186,8 @@ func distributor(p Params, ip *ioParams, events chan<- Event, keypresses <-chan 
 	ip.command = ioQuit
 	ioWorkAvailable.Unlock()
 	ioSpacesRemaining.Lock()
-	fmt.Println("hi")
 	ioSpacesRemaining.Unlock()
-	fmt.Println("hiii")
 	ioWorkAvailable.Unlock()
-
-	fmt.Println("-- we did it yippppeeee")
 }
 
 // Receive a board and slice it up into jobs
@@ -223,7 +217,6 @@ func simulateTurn(world [][]byte, p Params) [][]byte {
 	}
 	// wait for all goroutines to return
 	wg.Wait()
-	//fmt.Println(newWorld)
 	return newWorld
 }
 
