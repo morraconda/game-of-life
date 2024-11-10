@@ -118,7 +118,7 @@ func main() {
 
 	//Start listener
 	go func() {
-		listener, err = net.Listen("tcp", *pAddr)
+		listener, err = net.Listen("tcp", ":8030")
 		if err != nil {
 			log.Fatalf("Failed to listen on %s: %v", *pAddr, err)
 		}
