@@ -81,9 +81,9 @@ func publish(width int, height int, threads int, world *[][]byte, wg *sync.WaitG
 	wgMX.Lock()
 
 	//make sure there are enough workers
-	for i := len(workerAddressStrings); i < threads; i++ {
-		spawnWorkers()
-	}
+	//for i := len(workerAddressStrings); i < threads; i++ {
+	//	spawnWorkers()
+	//}
 
 	//debugging: printing workeraddress strings to see if neighbours were assigned right
 	for p, v := range workerAddressStrings {
