@@ -171,6 +171,7 @@ func distributor(p Params, ip *ioParams, events chan<- Event, keypresses <-chan 
 		turn++
 		pauseMutex.Unlock()
 	}
+	stateMutex.Unlock()
 	quit = true
 	fmt.Println("-- main loop exited")
 
