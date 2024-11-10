@@ -20,6 +20,7 @@ var jobsMX sync.RWMutex
 var wgMX sync.RWMutex
 var pAddr *string
 var workerAddresses []*exec.Cmd
+
 var workerAddressStrings []string
 var workerCount int
 var jobs = make(chan stubs.Request, 64)
@@ -62,6 +63,7 @@ func closeWorkers() {
 			fmt.Println("Error closing worker: ", err)
 		}
 	}
+	//workerAddressStrings = make([]string, 0)
 	os.Exit(0)
 	return
 }

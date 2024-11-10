@@ -32,8 +32,6 @@ func wrap(cell util.Cell, width int, height int) util.Cell {
 	return cell
 }
 
-//there is already a wrap function - use it!
-
 // returns list of cells adjacent to the one given, accounting for wraparounds
 func getAdjacentCells(cell util.Cell, width int, height int) []util.Cell {
 	var adjacent []util.Cell
@@ -104,15 +102,17 @@ type Compute struct {
 }
 
 // GetTopRow functions for getting the halo region top and bottom rows from the halo request
-func (s *Compute) GetTopRow(haloReq stubs.HaloRequest, haloRes *stubs.HaloResponse) {
+func (s *Compute) GetTopRow(haloReq stubs.HaloRequest, haloRes *stubs.HaloResponse) error {
 	s.topRowChan <- haloReq.Row
 	haloRes.Received = true
+	return nil
 }
 
 // GetBottomRow get the bottom row from a neighbour
-func (s *Compute) GetBottomRow(haloReq stubs.HaloRequest, haloRes *stubs.HaloResponse) {
+func (s *Compute) GetBottomRow(haloReq stubs.HaloRequest, haloRes *stubs.HaloResponse) error {
 	s.bottomRowChan <- haloReq.Row
 	haloRes.Received = true
+	return nil
 }
 
 func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) error {
@@ -123,34 +123,34 @@ func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) error {
 	topRow := req.World[req.StartY]
 	bottomRow := req.World[req.EndY-1]
 
+	time.Sleep(30 * time.Millisecond)
+
 	// Send rows to neighbors with error handling and debugging
-	log.Printf("Sending top row to neighbor at %s", req.TopNeighbor)
+	log.Printf("Sending top row to neighbor at address %s", req.TopNeighbor)
 	if err := sendTopRow(topRow, req.TopNeighbor); err != nil {
-		log.Printf("Error sending top row to %s: %v", req.TopNeighbor, err)
+		log.Printf("Error sending top row to address %s: %v", req.TopNeighbor, err)
 		return err
 	}
 
-	log.Printf("Sending bottom row to neighbor at %s", req.BottomNeighbor)
+	log.Printf("Sending bottom row to neighbor at address %s", req.BottomNeighbor)
 	if err := sendBottomRow(bottomRow, req.BottomNeighbor); err != nil {
-		log.Printf("Error sending bottom row to %s: %v", req.BottomNeighbor, err)
+		log.Printf("Error sending bottom row to address %s: %v", req.BottomNeighbor, err)
 		return err
 	}
 
-	// Wait for halo rows to be received with extended timeout and debug output
+	//Wait for halo rows to be received with extended timeout and debug output
 	select {
 	case s.topRow = <-s.topRowChan:
-		log.Println("Top row received successfully.")
-	case <-time.After(10 * time.Second): // Increased from 5 to 10 seconds
-		log.Printf("Timed out waiting for top row from neighbor %s", req.TopNeighbor)
-		return fmt.Errorf("timed out waiting for top row from neighbor %s", req.TopNeighbor)
+		log.Println("Top row received .")
+	case <-time.After(5 * time.Second):
+		log.Printf("Timed out waiting for top row from neighbor at address %s", req.TopNeighbor)
 	}
 
 	select {
 	case s.bottomRow = <-s.bottomRowChan:
 		log.Println("Bottom row received successfully.")
-	case <-time.After(10 * time.Second): // Increased from 5 to 10 seconds
-		log.Printf("Timed out waiting for bottom row from neighbor %s", req.BottomNeighbor)
-		return fmt.Errorf("timed out waiting for bottom row from neighbor %s", req.BottomNeighbor)
+	case <-time.After(5 * time.Second):
+		log.Printf("Timed out waiting for bottom row from neighbor at address %s", req.BottomNeighbor)
 	}
 
 	// Prepare the temporary world with halo rows
@@ -178,6 +178,24 @@ func (s *Compute) SimulateTurn(req stubs.Request, res *stubs.Response) error {
 			newWorld[i-1][j] = next
 		}
 	}
+
+	//log.Printf("Job processing")
+	//	newWorld := make([][]byte, req.EndY-req.StartY)
+	//	var flipped []util.Cell
+	//for i := req.StartY; i < req.EndY; i++ {
+	//	// initialise row, set the contents of the row accordingly
+	//	newWorld[i-req.StartY] = make([]byte, req.Width)
+	//	for j := 0; j < req.Width; j++ {
+	//		// check for flipped cells
+	//		cell := util.Cell{X: j, Y: i}
+	//		old := newWorld[i-req.StartY][j]
+	//		next := getNextCell(cell, req.World, req.Width, req.Height)
+	//		if old != next {
+	//			flipped = append(flipped, cell)
+	//		}
+	//		newWorld[i-req.StartY][j] = next
+	//	}
+	//}
 
 	res.World = newWorld
 	res.Flipped = flipped
@@ -214,17 +232,14 @@ func main() {
 	}()
 
 	//Dial the broker
-	time.Sleep(500 * time.Millisecond)
-	brokerClient, err := rpc.Dial("tcp", *brokerAddr)
+	server, err := rpc.Dial("tcp", *brokerAddr)
 	if err != nil {
-		log.Fatalf("Failed to connect to broker at %s: %v", *brokerAddr, err)
+		log.Fatalf("Failed to connect to broker: %v", err)
 	}
-	defer brokerClient.Close()
 
 	//subscribe to jobs
 	subscription := stubs.Subscription{FactoryAddress: *pAddr, Callback: "Compute.SimulateTurn"}
-	var subscriptionRes stubs.StatusReport
-	err = brokerClient.Call("Broker.Subscribe", subscription, &subscriptionRes)
+	err = server.Call(stubs.Subscribe, subscription, 'a')
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 	wg.Wait()
