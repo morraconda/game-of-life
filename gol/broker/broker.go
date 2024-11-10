@@ -218,7 +218,8 @@ func (b *Broker) Init(input stubs.Input, res *stubs.StatusReport) (err error) {
 
 	// If there are not enough workers currently available, spawn more
 	if b.threads > workerCount {
-		for i := 0; i < b.threads-workerCount; i++ {
+		for i := workerCount; i < b.threads; i++ {
+			fmt.Println(workerCount)
 			spawnWorkers()
 		}
 	}
