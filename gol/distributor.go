@@ -88,11 +88,11 @@ func saveOutput(world [][]byte, turn int, p Params, ip *ioParams, events chan<- 
 	ip.filename = getOutputFilename(p, turn)
 	writeToIO(world, p, ip)
 	ioWorkAvailable.Unlock()
-	fmt.Println("-- successfully wrote to output")
+	// fmt.Println("-- successfully wrote to output")
 
 	// send write event
 	ioSpacesRemaining.Lock()
-	fmt.Println("-- sending image event")
+	// fmt.Println("-- sending image event")
 	events <- ImageOutputComplete{turn, ip.filename}
 	ioSpacesRemaining.Unlock()
 }
@@ -104,30 +104,30 @@ func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte,
 		key := <-keypresses
 		switch key {
 		case sdl.K_s: // save
-			fmt.Println("-- s pressed")
+			// fmt.Println("-- s pressed")
 			stateMutex.Lock()
 			saveOutput(*world, *turn, p, ip, eventChan)
 			stateMutex.Unlock()
 
 		case sdl.K_q: // quit
-			fmt.Println("-- q pressed")
+			// fmt.Println("-- q pressed")
 			if paused {
 				pauseMutex.Unlock()
 			}
 			*quit = true
 
 		case sdl.K_p: // pause
-			fmt.Println("-- p pressed")
+			// fmt.Println("-- p pressed")
 			if paused {
 				stateMutex.Lock()
-				fmt.Println("-- continuing")
+				// fmt.Println("-- continuing")
 				eventChan <- StateChange{*turn, Executing}
 				paused = false
 				pauseMutex.Unlock()
 			} else {
 				pauseMutex.Lock()
 				stateMutex.Lock()
-				fmt.Println("-- paused on Turn", *turn)
+				// fmt.Println("-- paused on Turn", *turn)
 				eventChan <- StateChange{*turn, Paused}
 				paused = true
 			}
@@ -154,7 +154,7 @@ func distributor(p Params, ip *ioParams, events chan<- Event, keypresses <-chan 
 	go handleKeypress(keypresses, &turn, &world, &quit, p, ip, events)
 	go reportState(&turn, &world, events, &quit)
 
-	fmt.Println("-- init completed")
+	// fmt.Println("-- init completed")
 	// Main game loop
 	stateMutex.Lock()
 	for !quit && turn < p.Turns {
@@ -173,7 +173,7 @@ func distributor(p Params, ip *ioParams, events chan<- Event, keypresses <-chan 
 	}
 	stateMutex.Unlock()
 	quit = true
-	fmt.Println("-- main loop exited")
+	// fmt.Println("-- main loop exited")
 
 	// output final image
 	saveOutput(world, turn, p, ip, events)
