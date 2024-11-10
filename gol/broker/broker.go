@@ -13,7 +13,6 @@ import (
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
-//TODO: optimise mutex locks to reduce waiting time (ie: separate stateMX into a few independent locks)
 var stateMX sync.RWMutex
 var jobsMX sync.RWMutex
 var wgMX sync.RWMutex
@@ -68,7 +67,12 @@ func publish(width int, height int, threads int, world *[][]byte, wg *sync.WaitG
 	splitRequest.World = *world
 	splitRequest.Width, splitRequest.Height = width, height
 	stateMX.Unlock()
-	incrementY := height / threads
+	incrementY := 0
+	if threads == 0 {
+		incrementY = height
+	} else {
+		incrementY = height / threads
+	}
 	startY := 0
 	jobsMX.Lock()
 	wgMX.Lock()

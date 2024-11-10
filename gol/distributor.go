@@ -18,11 +18,11 @@ import (
 //TODO: add switch to disable visualisation
 //TODO: fix phantom bug that appears when running benchmark
 //TODO: fix quit not working after client reconnects:
-//TODO: add continuous state save for recovery
 // this is due to Ctrl+C not exiting cleanly and leaving the events channel opening causing deadlock?
 // could also do with figuring out why the hell a q keypress is sometimes sent when ctrl+C is used
 
 var brokerAddr = flag.String("broker", "127.0.0.1:8030", "Address of broker instance")
+var testing = true
 
 type distributorChannels struct {
 	events     chan<- Event
@@ -189,7 +189,6 @@ func periodicStateSave(finished <-chan bool, wg *sync.WaitGroup, client *rpc.Cli
 			wg.Done()
 			return
 		case <-time.After(10 * time.Second):
-			fmt.Println("CACHING")
 			makeCheckpoint(client, p)
 		}
 	}
@@ -321,7 +320,7 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	go reportState(finishedL, &wg, client, c, &initWG)
 	go periodicStateSave(finishedC, &wg, client, p, c, &initWG)
 
-	if !update.Running {
+	if !update.Running || testing {
 		// Pack initial world to be sent to broker
 		input := new(stubs.Input)
 		input.World = getInitialWorld(c.ioInput, p)
@@ -332,11 +331,13 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 		input.StartingTurn = 0
 
 		// Check for existing checkpoints for this execution
-		getCheckpoint(p, &input.World, &input.StartingTurn)
+		if !testing {
+			getCheckpoint(p, &input.World, &input.StartingTurn)
+		}
 
 		// Set number of goroutines to run on each worker
 		input.Routines = 4
-		input.Threads = p.Threads / 4
+		input.Threads = p.Threads
 
 		// Initialise broker
 		err = client.Call(stubs.Init, input, &status)
@@ -384,21 +385,19 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	}
 
 	if quitted {
-		fmt.Println("quitted")
 		req := new(stubs.PauseData)
 		res := new(stubs.PauseData)
 		err = client.Call(stubs.Quit, req, &res)
 		if err != nil {
 			fmt.Println("Error quitting: ", err)
 		}
-		fmt.Println("waiting for save")
 		saveOutput(client, p, c) //TODO: HANGS HERE
-		fmt.Println("saved")
 	}
 
 	// Signal goroutines to close
 	finishedR <- true
 	finishedL <- true
+	finishedC <- true
 
 	// Send final events
 	req := new(stubs.StatusReport)
