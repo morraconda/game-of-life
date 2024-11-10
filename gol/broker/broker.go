@@ -184,7 +184,6 @@ func (b *Broker) Init(input stubs.Input, res *stubs.StatusReport) (err error) {
 	b.newWorld = make([][]byte, b.height)
 	b.oldWorld = make([][]byte, b.height)
 	b.paused = false
-	b.turn = 0
 	b.reset = false
 	for i := range b.newWorld {
 		b.newWorld[i] = make([]byte, b.width)

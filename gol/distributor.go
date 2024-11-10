@@ -1,6 +1,8 @@
 package gol
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"github.com/veandco/go-sdl2/sdl"
@@ -22,7 +24,8 @@ import (
 // could also do with figuring out why the hell a q keypress is sometimes sent when ctrl+C is used
 
 var brokerAddr = flag.String("broker", "127.0.0.1:8030", "Address of broker instance")
-var testing = true
+var testing = false
+var path string
 
 type distributorChannels struct {
 	events     chan<- Event
@@ -42,6 +45,15 @@ func printCells(cells []util.Cell) {
 	for _, cell := range cells {
 		printCell(cell)
 	}
+}
+
+func hash(array [][]byte) string {
+	hasher := sha256.New()
+	for _, row := range array {
+		hasher.Write(row)
+	}
+	hashBytes := hasher.Sum(nil)
+	return hex.EncodeToString(hashBytes)
 }
 
 // get filename from params
@@ -100,9 +112,7 @@ func saveOutput(client *rpc.Client, p Params, c distributorChannels) (world [][]
 
 // Cache the state
 func makeCheckpoint(client *rpc.Client, p Params) {
-	pwd, _ := os.Getwd()
-	path := fmt.Sprintf("%s/gol/tmp/%s.cache", pwd, getInputFilename(p))
-	err := *new(error)
+	//err := *new(error)
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0644)
 	defer file.Close()
 	if err != nil {
@@ -140,44 +150,49 @@ func makeCheckpoint(client *rpc.Client, p Params) {
 }
 
 // If a cached state exists, load it
-func getCheckpoint(p Params, world *[][]byte, turn *int) {
-	pwd, _ := os.Getwd()
-	path := fmt.Sprintf("%s/gol/tmp/%s.cache", pwd, getInputFilename(p))
+func getCheckpoint(p Params, world *[][]byte) int {
 	if _, err := os.Stat(path); err == nil {
 		file, err := os.OpenFile(path, os.O_RDONLY, 0644)
 		defer file.Close()
 		if err != nil {
-			return
+			return 0
 		}
 		turnBytes := make([]byte, 4)
 		_, err = file.Read(turnBytes)
 		if err != nil {
 			fmt.Println("Error reading turn number: ", err)
-			return
+			return 0
 		}
 
 		cachedTurn := int(turnBytes[0])<<24 | int(turnBytes[1])<<16 | int(turnBytes[2])<<8 | int(turnBytes[3])
-		fmt.Println(cachedTurn)
 
 		if cachedTurn != 0 && cachedTurn != p.Turns {
-			fmt.Println("Cached checkpoint for ", getInputFilename(p), " found, continuing execution from turn ", cachedTurn)
+			fmt.Println("Cached checkpoint for game found, continuing execution from turn ", cachedTurn)
 			//line := make([]byte, p.ImageWidth)
 			for i := 0; i < p.ImageHeight; i++ {
 				line := make([]byte, p.ImageWidth)
 				_, err = file.Read(line)
 				if err != nil {
 					fmt.Println("Error reading line in makeCheckPoint: ", err)
-					return
+					return 0
 				}
 				(*world)[i] = line
 			}
-			*turn = cachedTurn
-			return
+			return cachedTurn
 		} else {
-			return
+			return 0
 		}
 	} else {
-		return
+		return 0
+	}
+}
+
+func removeCheckpoint() {
+	if _, err := os.Stat(path); err == nil {
+		err = os.Remove(path)
+		if err != nil {
+			fmt.Println("Error removing checkpoint: ", err)
+		}
 	}
 }
 
@@ -320,10 +335,15 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	go reportState(finishedL, &wg, client, c, &initWG)
 	go periodicStateSave(finishedC, &wg, client, p, c, &initWG)
 
+	world := getInitialWorld(c.ioInput, p)
+
+	pwd, _ := os.Getwd()
+	path = fmt.Sprintf("%s/gol/tmp/%s%s.cache", pwd, getInputFilename(p), hash(world))
+
 	if !update.Running || testing {
 		// Pack initial world to be sent to broker
 		input := new(stubs.Input)
-		input.World = getInitialWorld(c.ioInput, p)
+		input.World = world
 		input.Width = p.ImageWidth
 		input.Height = p.ImageHeight
 		input.Threads = p.Threads
@@ -332,7 +352,7 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 
 		// Check for existing checkpoints for this execution
 		if !testing {
-			getCheckpoint(p, &input.World, &input.StartingTurn)
+			input.StartingTurn = getCheckpoint(p, &input.World)
 		}
 
 		// Set number of goroutines to run on each worker
@@ -376,11 +396,13 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 		close(c.events)
 		os.Exit(0)
 	case <-quit:
+		removeCheckpoint()
 		quitted = true
 	case <-shutdown:
 		quitted = true
 		exit = true
 	case <-block.Done:
+		removeCheckpoint()
 		saveOutput(client, p, c)
 	}
 
@@ -391,7 +413,7 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 		if err != nil {
 			fmt.Println("Error quitting: ", err)
 		}
-		saveOutput(client, p, c) //TODO: HANGS HERE
+		saveOutput(client, p, c)
 	}
 
 	// Signal goroutines to close
