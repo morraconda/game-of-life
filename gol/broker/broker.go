@@ -13,7 +13,6 @@ import (
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
-//TODO: optimise mutex locks to reduce waiting time (ie: separate stateMX into a few independent locks)
 var stateMX sync.RWMutex
 var jobsMX sync.RWMutex
 var wgMX sync.RWMutex
@@ -44,7 +43,6 @@ func spawnWorkers() {
 	cmd := exec.Command("go", "run", "../server/server.go", "-ip=127.0.0.1:"+strconv.Itoa(port), "-broker=127.0.0.1:"+*pAddr)
 	workerAddresses[workerCount] = cmd
 	err = cmd.Start()
-	workerCount += 1
 	if err != nil {
 		panic(err)
 	}
@@ -235,12 +233,13 @@ func (b *Broker) ShutDown(req stubs.PauseData, res *stubs.PauseData) (err error)
 func (b *Broker) Subscribe(req stubs.Subscription, res *stubs.StatusReport) (err error) {
 	client, err := rpc.Dial("tcp", req.FactoryAddress)
 	if err == nil {
+		fmt.Println("Subscription request from:", req.FactoryAddress)
 		go subscriberLoop(client, req.Callback, &b.newWorld, &b.wg)
+		workerCount += 1
 	} else {
 		fmt.Println("Lost connection with spawned worker, spawning another: ", err)
 		delete(workerAddresses, workerCount)
-		workerCount--
-		spawnWorkers()
+		//spawnWorkers()
 	}
 	return
 }
