@@ -42,10 +42,12 @@ func spawnWorkers() {
 	// Start a worker at this address
 	cmd := exec.Command("go", "run", "../server/server.go", "-ip=127.0.0.1:"+strconv.Itoa(port), "-broker=127.0.0.1:"+*pAddr)
 	workerAddresses[workerCount] = cmd
+	workerCount++
 	err = cmd.Start()
 	if err != nil {
 		panic(err)
 	}
+
 }
 
 func closeWorkers() {
@@ -97,8 +99,8 @@ func subscriberLoop(client *rpc.Client, callback string, newWorld *[][]byte, wg 
 		//Take a job from the job queue
 		job := <-jobs
 		response := new(stubs.Response) // Empty response
-		job.Routines = 4
-		err := client.Call(stubs.SimulateTurn, job, response)
+		job.Routines = 1
+		err := client.Call(callback, job, response)
 		if err != nil {
 			jobs <- job
 			fmt.Println("Worker dead, starting new worker:", err)
@@ -220,7 +222,6 @@ mainLoop:
 			// Exit
 			break mainLoop
 		default:
-			fmt.Println(b.turn)
 			// Increment state
 			nextState(b.width, b.height, b.threads, &b.world, &b.newWorld, &b.wg)
 			stateMX.Lock()
@@ -268,13 +269,12 @@ func (b *Broker) Subscribe(req stubs.Subscription, res *stubs.StatusReport) (err
 	client, err := rpc.Dial("tcp", req.WorkerAddress)
 	if err == nil {
 		fmt.Println("Worker connected from: ", req.WorkerAddress)
-		workerCount += 1
-		fmt.Println(workerCount)
+		//workerCount++
 		go subscriberLoop(client, req.Callback, &b.newWorld, &b.wg)
 	} else {
 		fmt.Println("Lost connection with spawned worker, spawning another: ", err)
 		delete(workerAddresses, workerCount)
-		//workerCount--
+		workerCount--
 		spawnWorkers()
 	}
 	return

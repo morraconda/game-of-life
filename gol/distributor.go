@@ -17,14 +17,8 @@ import (
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
-//TODO: add switch to disable visualisation
-//TODO: fix phantom bug that appears when running benchmark
-//TODO: fix quit not working after client reconnects:
-// this is due to Ctrl+C not exiting cleanly and leaving the events channel opening causing deadlock?
-// could also do with figuring out why the hell a q keypress is sometimes sent when ctrl+C is used
-
 var brokerAddr = flag.String("broker", "127.0.0.1:8030", "Address of broker instance")
-var testing = false
+var testing = true
 var path string
 
 type distributorChannels struct {
