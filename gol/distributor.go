@@ -108,7 +108,6 @@ func handleKeypress(keypresses <-chan rune, turn *int, world *[][]byte, done <-c
 			case sdl.K_s: // save
 				fmt.Println("-- s pressed")
 				lock.Lock()
-				//fmt.Println("locked mutex")
 				saveOutput(*world, *turn, p, c)
 				lock.Unlock()
 			case sdl.K_q: // quit
@@ -200,13 +199,10 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	}
 
 	finishedL <- true
-	fmt.Println("-- hi")
 	finishedR <- true
-	fmt.Println("-- hii")
 
 	// Wait for goroutines to confirm closure
 	wg.Wait()
-	fmt.Println("-- hiiiii")
 
 	close(finishedL)
 	close(finishedR)
@@ -223,13 +219,11 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 	close(c.events)
 
 	// Make sure that the Io has finished any output before exiting.
-	fmt.Println("-- hiiiiiiiiiiiiiii")
 	c.ioCommand <- ioCheckIdle
 	<-c.ioIdle
 
 	close(c.ioCommand)
 
-	fmt.Println("-- we did it yippppeeee")
 }
 
 // Receive a board and slice it up into jobs
@@ -303,7 +297,6 @@ func countAdjacentCells(current util.Cell, world [][]byte, width int, height int
 	count := 0
 	cells := getAdjacentCells(current, width, height)
 	for _, cell := range cells {
-		//count += world[cell.Y][cell.X] / 255
 		if world[cell.Y][cell.X] == 255 {
 			count++
 		}
@@ -322,8 +315,6 @@ func getNextCell(cell util.Cell, world [][]byte, width int, height int) byte {
 		return 0
 	}
 }
-
-type Compute struct{}
 
 func worker(world [][]byte, outChan chan<- [][]byte, flippedChan chan<- []util.Cell,
 	startY int, endY int, p Params) {
@@ -350,31 +341,4 @@ func worker(world [][]byte, outChan chan<- [][]byte, flippedChan chan<- []util.C
 
 	outChan <- newWorld
 	flippedChan <- flipped
-}
-
-type Request struct {
-	World  [][]byte
-	StartY int
-	EndY   int
-	Height int
-	Width  int
-}
-
-type Response struct {
-	World   [][]byte
-	Flipped []util.Cell
-}
-
-type Update struct {
-	Flipped []util.Cell
-	World   [][]byte
-}
-
-type Subscription struct {
-	FactoryAddress string
-	Callback       string
-}
-
-type StatusReport struct {
-	Message string
 }
