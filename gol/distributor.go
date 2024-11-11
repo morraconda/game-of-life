@@ -165,6 +165,11 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 		defer wg.Done()
 	}()
 
+	outChans := make([]chan [][]byte, p.Threads)
+	for i := 0; i < p.Threads; i++ {
+		outChans[i] = make(chan [][]byte)
+	}
+
 	// Main game loop
 	done := false
 	for !done && turn < p.Turns {
@@ -178,7 +183,8 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 			}
 		default:
 			// advance to next state
-			newWorld, _ := simulateTurn(world, p)
+
+			newWorld := simulateTurn(world, p, outChans)
 			lock.Lock()
 
 			//saveOutput(world, turn, p, c)
@@ -227,38 +233,31 @@ func distributor(p Params, c distributorChannels, keypresses <-chan rune) {
 }
 
 // Receive a board and slice it up into jobs
-func simulateTurn(world [][]byte, p Params) ([][]byte, []util.Cell) {
+func simulateTurn(world [][]byte, p Params, outChans []chan [][]byte) [][]byte {
 
 	// initialise output channels
-	outChans := make([]chan [][]byte, p.Threads)
-	flippedChan := make(chan []util.Cell, p.Threads)
 	var newWorld [][]byte
-	var flipped []util.Cell
 
 	// distribution logic
 	incrementY := p.ImageHeight / p.Threads
 	startY := 0
 	for i := 0; i < p.Threads; i++ {
-		outChans[i] = make(chan [][]byte)
 		var endY int
 		if i == p.Threads-1 {
 			endY = p.ImageHeight
 		} else {
 			endY = incrementY + startY
 		}
-		go worker(world, outChans[i], flippedChan, startY, endY, p)
+		go worker(world, outChans[i], startY, endY, p)
 		startY += incrementY
 	}
 
 	// piece together new output
 	for i := 0; i < p.Threads; i++ {
 		result := <-outChans[i]
-		close(outChans[i])
 		newWorld = append(newWorld, result...)
-		flipped = append(flipped, <-flippedChan...)
 	}
-	close(flippedChan)
-	return newWorld, flipped
+	return newWorld
 }
 
 // returns in-bounds version of a cell if out of bounds
@@ -316,29 +315,21 @@ func getNextCell(cell util.Cell, world [][]byte, width int, height int) byte {
 	}
 }
 
-func worker(world [][]byte, outChan chan<- [][]byte, flippedChan chan<- []util.Cell,
-	startY int, endY int, p Params) {
+func worker(world [][]byte, outChan chan<- [][]byte, startY int, endY int, p Params) {
 	// initialise 2D slice of rows
 	width := p.ImageWidth
 	height := p.ImageHeight
 
 	newWorld := make([][]byte, endY-startY)
-	var flipped []util.Cell
 	for i := startY; i < endY; i++ {
 		// initialise row, set the contents of the row accordingly
 		newWorld[i-startY] = make([]byte, width)
 		for j := 0; j < width; j++ {
-			// check for flipped cells
 			cell := util.Cell{X: j, Y: i}
-			old := newWorld[i-startY][j]
 			next := getNextCell(cell, world, width, height)
-			if old != next {
-				flipped = append(flipped, cell)
-			}
 			newWorld[i-startY][j] = next
 		}
 	}
 
 	outChan <- newWorld
-	flippedChan <- flipped
 }
